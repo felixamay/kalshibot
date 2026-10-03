@@ -35,10 +35,16 @@ export function PrimarySignalCard({
   );
 
   const showActionable = active && !cd.expired;
+  const marketLine =
+    signal.market_instruction ||
+    (signal.direction === "NO"
+      ? `NO on this contract. That is against ${signal.player}.`
+      : `YES on this market — ${signal.player}.`);
   const label = showActionable
-    ? signal.display_label || (signal.raw_signal_type || signal.signal_type || "").replace(/_/g, " ")
+    ? signal.bet_instruction ||
+      (signal.direction === "NO" ? "Bet behind the market" : `Bet behind ${signal.player}`)
     : signal.display_label;
-  const sub = showActionable ? null : signal.display_sublabel;
+  const sub = showActionable ? marketLine : signal.display_sublabel;
 
   const urgencyText =
     cd.urgency === "FINAL"
@@ -71,9 +77,11 @@ export function PrimarySignalCard({
               {sub}
             </p>
           )}
-          <p className="mt-3 font-display text-xl md:text-3xl text-mist">
-            {signal.player} — {signal.direction}
-          </p>
+          {!showActionable && (
+            <p className="mt-3 font-display text-xl md:text-3xl text-mist">
+              {signal.player} — {signal.direction}
+            </p>
+          )}
           {signal.pattern_name && (
             <p className="mt-2 font-mono text-xs uppercase tracking-widest text-mist/70">
               {signal.pattern_name}

@@ -77,6 +77,25 @@ def pattern_name(pattern_type: str) -> str:
     return PATTERN_NAMES.get(pattern_type, pattern_type.replace("_", " ").title())
 
 
+def bet_behind_copy(player: str, side: str, pattern_type: str) -> tuple[str, str]:
+    """Tell the user which side the discovered pattern is for."""
+    name = player.strip() or "this player"
+    if pattern_type in {"SERVE_CHANGE", "BREAK_POINT_REACTION"} and side != "NO":
+        return (
+            f"Bet behind {name}",
+            "That is this player's market. You place the bet manually on Kalshi.",
+        )
+    if side == "NO":
+        return (
+            "Bet behind the market",
+            f"NO on this contract. That is against {name}. You place the bet manually on Kalshi.",
+        )
+    return (
+        "Bet behind the market",
+        f"YES on this market — {name}. You place the bet manually on Kalshi.",
+    )
+
+
 def normalized_move(price_change: float, baseline_volatility: float, floor: float = 0.75) -> float:
     """Scale a price change by this match's own volatility.
 
@@ -763,6 +782,9 @@ class PatternEngine:
         if decision in ("PATTERN_ENTRY_SIGNAL", "STRONG_PATTERN_SIGNAL"):
             timeline.append({"t_ms": now_ms or (points[-1].ts_ms if points else 0), "kind": "entry_signal", "price": book.price})
             tradeable = True
+        player = player_a if setup.get("side", "YES") == "YES" else player_b
+        side = setup.get("side", "YES")
+        headline, detail = bet_behind_copy(player, side, pattern_type)
         explanation = self._explain(
             decision=decision,
             pattern_type=pattern_type,
@@ -784,6 +806,8 @@ class PatternEngine:
             price=book.price,
             blockers=blockers,
             reasons=reasons,
+            bet_headline=headline,
+            bet_detail=detail,
         )
         return PatternAssessment(
             decision=decision,
@@ -1621,7 +1645,7 @@ class PatternEngine:
         # A pattern that exists and is still early is the alert. Do not wait for
         # three confirmations or three historical repeats.
         if market_ok and stage in ("EARLY", "DEVELOPING"):
-            reasons.append("Pattern exists and is about to begin. Bet this player.")
+            reasons.append("Pattern exists and is about to begin. Bet behind the player or the market.")
             if (
                 entry_score >= settings.strong_pattern_entry_score
                 and confidence >= settings.strong_pattern_confidence
@@ -1653,14 +1677,10 @@ class PatternEngine:
             f"Maximum entry {kwargs['maximum']:.0f}¢. Current {kwargs['price']:.0f}¢. "
             "Observed success is not a guaranteed future probability."
         )
-        if decision == "PATTERN_ENTRY_SIGNAL":
-            return (
-                "PATTERN ABOUT TO BEGIN. Bet this player. "
-                + base
-                + " The five-minute study does not delay this alert. You place the bet manually."
-            )
-        if decision == "STRONG_PATTERN_SIGNAL":
-            return "STRONG PATTERN SIGNAL. " + base + " Not a guaranteed result. You place the bet manually."
+        if decision in ("PATTERN_ENTRY_SIGNAL", "STRONG_PATTERN_SIGNAL"):
+            headline = kwargs.get("bet_headline") or "Bet behind the market"
+            detail = kwargs.get("bet_detail") or "You place the bet manually on Kalshi."
+            return f"{headline}. {detail} " + base
         if decision == "PATTERN_WATCH":
             return "PATTERN WATCH. " + base + " Do not enter yet."
         if decision == "PATTERN_ALREADY_ADVANCED":

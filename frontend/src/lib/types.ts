@@ -44,6 +44,8 @@ export interface LiveSignal {
   entry_zone_high?: number | null;
   pattern_progress?: number | null;
   pattern_stage?: string;
+  bet_instruction?: string;
+  market_instruction?: string;
   lifecycle?: Array<Record<string, unknown>>;
 }
 

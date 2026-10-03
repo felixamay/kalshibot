@@ -38,6 +38,7 @@ from app.services.signals.patterns import (
     PatternEngine,
     PatternHealthView,
     book_from_market,
+    bet_behind_copy,
     combine_exit_decision,
     series_from_ticks,
 )
@@ -1101,6 +1102,15 @@ class SignalEngine:
         model_cap = read.max_entry_price_cents if read else ask + self.settings.max_entry_slippage_cents
         max_entry = max_entry_override if max_entry_override is not None else model_cap
         kind = signal_kind or (SignalType.STRONG_BET_SIGNAL if strong else SignalType.BET_SIGNAL)
+        named_player = player_name or prob.player
+        if pattern is not None:
+            bet_instruction, market_instruction = bet_behind_copy(
+                named_player,
+                direction,
+                pattern.pattern_type,
+            )
+        else:
+            bet_instruction, market_instruction = "", ""
 
         sig = LiveSignal(
             signal_id=signal_id,
@@ -1109,7 +1119,7 @@ class SignalEngine:
             market_id=ctx.market_db_id,
             market_ticker=ctx.market_ticker,
             signal_type=kind,
-            player=player_name or prob.player,
+            player=named_player,
             direction=direction,
             created_at_ms=now_ms,
             expires_at_ms=now_ms + ttl.ttl_ms,
@@ -1133,6 +1143,8 @@ class SignalEngine:
             entry_zone_high=pattern.entry_zone_high if pattern else None,
             pattern_progress=pattern.progress if pattern else None,
             pattern_stage=pattern.stage if pattern else "",
+            bet_instruction=bet_instruction,
+            market_instruction=market_instruction,
             lifecycle=[
                 {
                     "event_type": "created",

@@ -54,6 +54,8 @@ class LiveSignal:
     entry_zone_high: Optional[float] = None
     pattern_progress: Optional[float] = None
     pattern_stage: str = ""
+    bet_instruction: str = ""
+    market_instruction: str = ""
     lifecycle: list[dict[str, Any]] = field(default_factory=list)
 
     def remaining_ms(self, server_now_ms: float | None = None) -> float:
@@ -188,6 +190,8 @@ class LiveSignal:
             "entry_zone_high": self.entry_zone_high,
             "pattern_progress": self.pattern_progress,
             "pattern_stage": self.pattern_stage,
+            "bet_instruction": self.bet_instruction,
+            "market_instruction": self.market_instruction,
             "lifecycle": self.lifecycle[-20:],
             # Never leave BET NOW visible when not actionable
             "display_label": _display_label(self, actionable, now),
@@ -205,6 +209,8 @@ def _entry_type(signal: LiveSignal) -> bool:
 
 
 def _display_label(signal: LiveSignal, actionable: bool, now: float) -> str:
+    if actionable and signal.bet_instruction:
+        return signal.bet_instruction
     if actionable:
         return signal_display_label(signal.signal_type)
     if _entry_type(signal) and signal.expiration_reason == ExpirationReason.PRICE_MOVED:
@@ -223,6 +229,8 @@ def _display_label(signal: LiveSignal, actionable: bool, now: float) -> str:
 
 
 def _display_sublabel(signal: LiveSignal, actionable: bool) -> str | None:
+    if actionable and signal.market_instruction:
+        return signal.market_instruction
     if actionable:
         return None
     if _entry_type(signal) and signal.expiration_reason == ExpirationReason.PRICE_MOVED:

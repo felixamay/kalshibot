@@ -210,6 +210,15 @@ function PatternStatus({
         Pattern status
       </p>
       <p className="mt-1 font-display text-xl">{pattern.pattern_name}</p>
+      {(pattern.decision === "PATTERN_ENTRY_SIGNAL" || pattern.decision === "STRONG_PATTERN_SIGNAL") && (
+        <p className="mt-2 font-mono text-sm uppercase tracking-wider text-signal-lime">
+          {pattern.pattern_type === "SERVE_CHANGE" || pattern.pattern_type === "BREAK_POINT_REACTION"
+            ? `Bet behind ${pattern.player || "this player"}`
+            : pattern.player_side === "NO"
+              ? "Bet behind the market — NO"
+              : `Bet behind the market — YES${pattern.player ? `, ${pattern.player}` : ""}`}
+        </p>
+      )}
       <div className="mt-2 grid grid-cols-2 sm:grid-cols-4 gap-2 font-mono text-xs">
         <Stat label="Stage" value={pattern.stage || "—"} />
         <Stat label="Similarity" value={pattern.similarity != null ? `${Math.round(pattern.similarity)}%` : "—"} />

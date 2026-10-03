@@ -23,6 +23,7 @@ from app.services.signals.patterns import (
     seed_pullback,
     support_zones,
     time_decay_score,
+    bet_behind_copy,
 )
 from app.services.tennis.probability import ProbabilityResult
 
@@ -60,6 +61,18 @@ def early_book(price: float) -> BookSnapshot:
 def developing_pullback(start: float = 60, low: float = 57, current: float = 58) -> list:
     prices = [start, start - 1, start - 2, low, low + 0.4, current]
     return [make_point(i * 1000, price) for i, price in enumerate(prices)]
+
+
+def test_bet_behind_names_the_player_or_the_market():
+    market_headline, market_detail = bet_behind_copy("Osaka", "YES", "PULLBACK_RECOVERY")
+    assert market_headline == "Bet behind the market"
+    assert "Osaka" in market_detail
+    assert "YES" in market_detail
+    player_headline, _detail = bet_behind_copy("Osaka", "YES", "SERVE_CHANGE")
+    assert player_headline == "Bet behind Osaka"
+    against_headline, against_detail = bet_behind_copy("Osaka", "NO", "REVERSAL")
+    assert against_headline == "Bet behind the market"
+    assert "against Osaka" in against_detail
 
 
 def test_normalized_move_uses_match_volatility():
@@ -419,4 +432,6 @@ async def test_study_clock_does_not_delay_a_pattern_that_is_about_to_begin():
     assert card["display_state"] in ("PATTERN_ENTRY_SIGNAL", "STRONG_PATTERN_SIGNAL")
     assert payload["actionable_signals"], card["hold_reason"]
     assert payload["actionable_signals"][0]["player"] == "Player A"
+    assert "Bet behind" in (payload["actionable_signals"][0].get("bet_instruction") or "")
+    assert "market" in (payload["actionable_signals"][0].get("market_instruction") or "").lower()
     assert "Pullback" in (payload["actionable_signals"][0].get("pattern_name") or "")
