@@ -47,6 +47,7 @@ export function PrimarySignalCard({
     : signal.display_label;
   const sub = showActionable ? marketLine : signal.display_sublabel;
 
+  const patternReasons = signal.pattern_reasons ?? [];
   const urgencyText =
     cd.urgency === "FINAL"
       ? "SIGNAL ABOUT TO EXPIRE"
@@ -94,9 +95,9 @@ export function PrimarySignalCard({
                   ? ` · confidence ${Math.round(signal.pattern_confidence)}`
                   : ""}
               </p>
-              {(signal.pattern_reasons || []).length > 0 && (
+              {patternReasons.length > 0 && (
                 <ul className="mt-2 space-y-1 text-sm normal-case tracking-normal text-mist/80">
-                  {signal.pattern_reasons.slice(0, 6).map((reason) => (
+                  {patternReasons.slice(0, 6).map((reason) => (
                     <li key={reason}>{reason}</li>
                   ))}
                 </ul>
