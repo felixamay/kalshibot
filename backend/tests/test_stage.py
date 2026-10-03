@@ -11,7 +11,7 @@ from app.services.signals.engine import SignalEngine
 from app.services.signals.patterns import seed_pullback
 from app.services.tennis.probability import ProbabilityResult
 from app.services.tennis.provider import TennisLiveState
-from app.services.tennis.stage import suggestion_block
+from app.services.tennis.stage import pattern_serve_block, serve_fingerprint, serves_added, suggestion_block
 from tests.test_patterns import settings
 
 
@@ -102,9 +102,14 @@ async def test_a_discovered_pattern_is_suggested_in_the_early_window():
     assert fresh.dashboard_payload()["actionable_signals"] == []
 
     seed_pullback(engine.pattern_engine, "KXTEST", time.time() * 1000, 56, 53, 60, vol=1)
-    engine.snap.matches["KXTEST"].tennis = _score(
-        match_score="1-0", game_score="5-4", point_score="30-30"
-    )
+    ctx = engine.snap.matches["KXTEST"]
+    ctx.tennis = _score(match_score="1-0", game_score="5-4", point_score="15-0")
+    engine.note_serves(ctx)
+    ctx.tennis = _score(match_score="1-0", game_score="5-4", point_score="30-0")
+    engine.note_serves(ctx)
+    ctx.tennis = _score(match_score="1-0", game_score="5-4", point_score="30-15")
+    engine.note_serves(ctx)
+    assert ctx.serves_seen == 2
     await _play(engine, path)
     payload = engine.dashboard_payload()
     assert payload["actionable_signals"], payload["matches"][0]["hold_reason"]
@@ -116,6 +121,42 @@ async def test_a_discovered_pattern_is_suggested_in_the_early_window():
         SignalType.PATTERN_ENTRY_SIGNAL.value,
         SignalType.STRONG_PATTERN_SIGNAL.value,
     )
+
+
+def test_a_pattern_waits_for_every_two_serves():
+    assert pattern_serve_block(0, 0)
+    assert pattern_serve_block(1, 0)
+    assert pattern_serve_block(2, 0) is None
+    assert pattern_serve_block(3, 2)
+    assert pattern_serve_block(4, 2) is None
+
+    first = serve_fingerprint(_score(game_score="1-0", set_score="6-3 1-0"))
+    primed = serve_fingerprint(_score(game_score="1-0", set_score="6-3 1-0"))
+    assert serves_added(first, primed, False) == (0, False)
+    nxt = serve_fingerprint(_score(game_score="2-0", set_score="6-3 2-0"))
+    added, visible = serves_added(first, nxt, False)
+    assert added == 4
+    assert visible is False
+    point = serve_fingerprint(_score(game_score="2-0", set_score="6-3 2-0", point_score="15-0"))
+    added, visible = serves_added(nxt, point, False)
+    assert added == 1
+    assert visible is True
+
+
+@pytest.mark.asyncio
+async def test_live_score_does_not_make_a_pattern_before_two_serves():
+    engine = _engine()
+    seed_pullback(engine.pattern_engine, "KXTEST", time.time() * 1000, 56, 53, 60, vol=1)
+    ctx = engine.snap.matches["KXTEST"]
+    ctx.tennis = _score(match_score="1-0", game_score="3-2", point_score="15-0")
+    engine.note_serves(ctx)
+    ctx.tennis = _score(match_score="1-0", game_score="3-2", point_score="30-0")
+    engine.note_serves(ctx)
+    assert ctx.serves_seen == 1
+    await _play(engine, (60, 59, 58, 57, 57.4, 58))
+    card = engine.dashboard_payload()["matches"][0]
+    assert engine.dashboard_payload()["actionable_signals"] == []
+    assert "two serves" in card["hold_reason"]
 
 
 def _engine() -> SignalEngine:

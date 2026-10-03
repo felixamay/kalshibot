@@ -53,7 +53,7 @@ from app.services.signals.mispricing import (
 from app.services.signals.ttl import SignalTTLCalculator
 from app.services.tennis.probability import ProbabilityResult, TennisProbabilityModel
 from app.services.tennis.provider import TennisLiveState
-from app.services.tennis.stage import suggestion_block
+from app.services.tennis.stage import pattern_serve_block, serve_fingerprint, serves_added, suggestion_block
 
 logger = logging.getLogger(__name__)
 
@@ -144,6 +144,11 @@ class MatchContext:
     scheduled_start_ms: Optional[float] = 0.0
     # None uses the schedule. True/False comes from the live score feed.
     score_confirmed: Optional[bool] = None
+    # Serves observed since this match was linked. A pattern is made every two.
+    serves_seen: int = 0
+    last_pattern_serve: int = 0
+    serve_fingerprint: Optional[tuple[Any, ...]] = None
+    points_were_visible: bool = False
 
 
 # A tennis match can run long. Outside this window the contract is not a live game.
@@ -244,6 +249,24 @@ class SignalEngine:
             )
         return ctx
 
+    def note_serves(self, ctx: MatchContext) -> None:
+        """Count serves the score feed has shown since the previous look."""
+        tennis = ctx.tennis
+        if tennis is None or not getattr(tennis, "available", False):
+            return
+        current = serve_fingerprint(tennis)
+        previous = ctx.serve_fingerprint
+        if previous is None:
+            ctx.serve_fingerprint = current
+            ctx.points_were_visible = bool(current[0]) or bool(current[1])
+            return
+        if current == previous:
+            return
+        added, visible = serves_added(previous, current, ctx.points_were_visible)
+        ctx.serves_seen += added
+        ctx.points_were_visible = visible
+        ctx.serve_fingerprint = current
+
     async def on_market_update(
         self,
         ticker: str,
@@ -334,6 +357,7 @@ class SignalEngine:
 
         # Discover and suggest only in the early live window. A late price,
         # a pre-serve score, or a clear winner in the last five serves is not recorded.
+        self.note_serves(ctx)
         block = suggestion_block(ctx.tennis, market.mid)
         if block:
             active = self._active_signal_for(ticker)
@@ -385,6 +409,19 @@ class SignalEngine:
                 f"The cap is {self.settings.max_signals_per_match}."
             )
             return
+
+        if ctx.tennis is not None and ctx.tennis.available:
+            waiting = pattern_serve_block(ctx.serves_seen, ctx.last_pattern_serve)
+            if waiting:
+                active = self._active_signal_for(ticker)
+                if active and active.is_actionable(now) and active.signal_type in _PATTERN_BET_TYPES:
+                    ctx.display_state = active.signal_type
+                    ctx.hold_reason = active.bet_instruction or waiting
+                    return
+                ctx.display_state = SignalType.STUDYING_MATCH
+                ctx.hold_reason = waiting
+                self._remember_phase(ctx, SignalType.STUDYING_MATCH, now)
+                return
 
         await self._evaluate_entry(ctx, market, now)
 
@@ -549,6 +586,13 @@ class SignalEngine:
         elif view.decision in ("FAILED_BREAKOUT", "PATTERN_ALREADY_ADVANCED", "SEARCHING"):
             ctx.confirmation_count = 0 if view.decision != "SEARCHING" else max(0, ctx.confirmation_count - 1)
         ctx.last_pattern = view
+        # One pattern per pair of serves. Keep looking until this pair actually makes one.
+        if (
+            ctx.tennis is not None
+            and ctx.tennis.available
+            and view.decision != "SEARCHING"
+        ):
+            ctx.last_pattern_serve = ctx.serves_seen
         ask = market.executable_yes_price() if view.player_side != "NO" else market.executable_no_price()
         if ask <= 0:
             ask = view.current_price

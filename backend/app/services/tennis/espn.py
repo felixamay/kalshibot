@@ -35,6 +35,7 @@ class EspnLiveMatch:
     detail: str
     sets: list[tuple[int, int]] = field(default_factory=list)
     source_url: str = ""
+    server_name: Optional[str] = None
 
 
 def last_name(name: str) -> str:
@@ -65,9 +66,13 @@ def parse_scoreboard(payload: dict[str, Any], *, tournament: Optional[str] = Non
             continue
         names: list[str] = []
         lines: list[list[int]] = []
+        server_name: Optional[str] = None
         for competitor in competitors[:2]:
             athlete = competitor.get("athlete") if isinstance(competitor.get("athlete"), dict) else {}
-            names.append(str(athlete.get("displayName") or athlete.get("fullName") or ""))
+            name = str(athlete.get("displayName") or athlete.get("fullName") or "")
+            names.append(name)
+            if competitor.get("possession") is True and name:
+                server_name = name
             games: list[int] = []
             for score in competitor.get("linescores") or []:
                 if isinstance(score, dict) and score.get("value") is not None:
@@ -87,6 +92,7 @@ def parse_scoreboard(payload: dict[str, Any], *, tournament: Optional[str] = Non
                 detail=str(kind.get("detail") or kind.get("shortDetail") or "In Progress"),
                 sets=sets,
                 source_url=ESPN_MATCH_URL.format(match_id=match_id),
+                server_name=server_name,
             )
         )
     return found
@@ -111,6 +117,13 @@ def state_for_players(match: EspnLiveMatch, player_a: str, player_b: str) -> Ten
         available=True,
         source="espn",
         source_url=match.source_url,
+        server=(
+            "A"
+            if match.server_name and last_name(match.server_name) == last_name(player_a)
+            else "B"
+            if match.server_name
+            else None
+        ),
     )
 
 

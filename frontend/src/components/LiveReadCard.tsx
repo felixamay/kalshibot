@@ -136,8 +136,8 @@ export function LiveReadCard({
         </ul>
       )}
       <p className="mt-3 font-mono text-[11px] uppercase tracking-wider text-mist/40">
-        A pattern is suggested only after it has been discovered on a live match, after the
-        first serve, while the game is still at or under 85%. The last 5 serves are skipped
+        A pattern is made only after every two serves, and only after it has been discovered
+        on a live match, past the first serve, while the game is still at or under 85%. The last 5 serves are skipped
         when the winner is clear. You bet that player yourself on Kalshi.
       </p>
     </section>

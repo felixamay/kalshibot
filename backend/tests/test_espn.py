@@ -47,6 +47,7 @@ def test_only_in_progress_matches_are_parsed_and_the_score_follows_the_yes_playe
                                     },
                                     {
                                         "athlete": {"displayName": "Elena Rybakina"},
+                                        "possession": True,
                                         "linescores": [{"value": 6}, {"value": 4}],
                                     },
                                 ],
@@ -65,6 +66,7 @@ def test_only_in_progress_matches_are_parsed_and_the_score_follows_the_yes_playe
     assert state.set_score == "6-3 4-5"
     assert state.match_score == "1-0"
     assert state.game_score == "4-5"
+    assert state.server == "A"
     assert state.source_url == "https://www.espn.com/tennis/match/_/id/184323"
 
 

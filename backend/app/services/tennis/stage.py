@@ -2,7 +2,8 @@
 
 The 5-minute observation clock is not used. A pattern may be suggested only
 after the first serve, while the leading side is still at or under 85%, and
-not in the last five serves when the winner is already clear.
+not in the last five serves when the winner is already clear. A new pattern
+is made only after every two serves.
 """
 
 from __future__ import annotations
@@ -12,6 +13,9 @@ from typing import Any, Optional
 
 LATE_GAME_PERCENT = 85.0
 CLOSING_SERVES = 5
+# The shortest tennis game is four serves. A game change is that many serves
+# when the feed does not publish each point.
+_SERVES_IN_COMPLETED_GAME = 4
 
 _SCORE_PAIR = re.compile(r"(\d+)\s*-\s*(\d+)")
 _POINT = {
@@ -37,6 +41,47 @@ def leading_percent(price_cents: Optional[float]) -> Optional[float]:
     if price <= 0 or price >= 100:
         return None
     return max(price, 100.0 - price)
+
+
+def serve_fingerprint(tennis: Any) -> tuple[Any, ...]:
+    """Score fields that move when a serve is played. The server name is not one of them."""
+    recent = tuple(getattr(tennis, "recent_points", None) or [])
+    return (
+        getattr(tennis, "point_score", None),
+        recent,
+        getattr(tennis, "game_score", None),
+        getattr(tennis, "set_score", None),
+    )
+
+
+def serves_added(previous: tuple[Any, ...], current: tuple[Any, ...], points_were_visible: bool) -> tuple[int, bool]:
+    """How many serves the new score proves. The first snapshot adds none."""
+    prev_point, prev_recent, prev_game, prev_set = previous
+    point, recent, game, set_score = current
+    points_visible = points_were_visible or bool(point) or bool(recent)
+    if len(recent) > len(prev_recent):
+        return len(recent) - len(prev_recent), True
+    same_game = game == prev_game and set_score == prev_set
+    if point and point != prev_point and same_game:
+        return 1, True
+    if point and point != prev_point and not same_game and (prev_point or points_were_visible):
+        return 1, True
+    if not points_were_visible and not prev_point and not prev_recent and not same_game:
+        return _SERVES_IN_COMPLETED_GAME, points_visible
+    return 0, points_visible
+
+
+def pattern_serve_block(serves_seen: int, last_pattern_serve: int) -> Optional[str]:
+    """A pattern is made on serve 2, 4, 6, … and not on the quotes in between."""
+    advanced = serves_seen - last_pattern_serve
+    if advanced >= 2 and advanced % 2 == 0:
+        return None
+    need = 1 if advanced % 2 == 1 else 2
+    noun = "serve" if need == 1 else "serves"
+    return (
+        "A pattern is made only after every two serves. "
+        f"{need} more {noun} before the next pattern."
+    )
 
 
 def suggestion_block(tennis: Any, price_cents: Optional[float]) -> Optional[str]:

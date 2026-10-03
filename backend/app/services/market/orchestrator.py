@@ -460,6 +460,7 @@ class MarketOrchestrator:
             ctx = self.engine.snap.matches[ticker]
             ctx.score_confirmed = True
             ctx.tennis = oriented
+            self.engine.note_serves(ctx)
             full_a, full_b = state.player_a, state.player_b
             if last_name(player_a) == last_name(full_b):
                 full_a, full_b = full_b, full_a
