@@ -1,0 +1,624 @@
+"""Signal engine — observation, confirmation, emission, early invalidation."""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import re
+import time
+from dataclasses import dataclass, field
+from typing import Any, Callable, Awaitable, Optional
+from uuid import uuid4
+
+from app.config import Settings, get_settings
+from app.core.enums import (
+    EXPIRATION_REASON_MESSAGES,
+    AnalysisMode,
+    ConnectionStatus,
+    ExpirationReason,
+    SignalStatus,
+    SignalType,
+)
+from app.services.market.analyzer import MarketState, RollingMarketAnalyzer
+from app.services.signals.confidence import SignalConfidenceCalculator
+from app.services.signals.live_signal import LiveSignal
+from app.services.signals.ttl import SignalTTLCalculator
+from app.services.tennis.probability import ProbabilityResult, TennisProbabilityModel
+from app.services.tennis.provider import TennisLiveState
+
+logger = logging.getLogger(__name__)
+
+BroadcastFn = Callable[[dict[str, Any]], Awaitable[None]]
+
+
+def _slug(name: str) -> str:
+    parts = re.sub(r"[^A-Za-z0-9]+", " ", name).strip().split()
+    if not parts:
+        return "UNK"
+    if len(parts) == 1:
+        return parts[0][:3].upper()
+    return (parts[0][:1] + parts[-1][:2]).upper()
+
+
+@dataclass
+class MatchContext:
+    match_id: str
+    player_a: str
+    player_b: str
+    tournament: Optional[str]
+    market_ticker: str
+    market_db_id: str
+    observation_started_ms: float
+    observation_ends_ms: float
+    signals_emitted: int = 0
+    cooldown_until_ms: float = 0.0
+    confirmation_count: int = 0
+    last_edge_positive: bool = False
+    version_counter: int = 0
+    active_signal_id: Optional[str] = None
+    analysis_mode: str = AnalysisMode.OBSERVING.value
+    display_state: SignalType = SignalType.STUDYING_MATCH
+    tennis: Optional[TennisLiveState] = None
+    last_model: Optional[ProbabilityResult] = None
+    chase_blocked_until_ms: float = 0.0
+    best_seen_ask: Optional[float] = None  # for anti-chase
+
+
+@dataclass
+class EngineSnapshot:
+    connection_status: ConnectionStatus = ConnectionStatus.DISCONNECTED
+    matches: dict[str, MatchContext] = field(default_factory=dict)
+    analyzers: dict[str, RollingMarketAnalyzer] = field(default_factory=dict)
+    signals: dict[str, LiveSignal] = field(default_factory=dict)
+    signal_history: list[dict[str, Any]] = field(default_factory=list)
+
+
+class SignalEngine:
+    """
+    Core real-time analyst.
+
+    NEVER places orders. Only emits advisory signals with TTL and early cancel.
+    """
+
+    def __init__(
+        self,
+        settings: Settings | None = None,
+        broadcast: BroadcastFn | None = None,
+    ) -> None:
+        self.settings = settings or get_settings()
+        self.broadcast = broadcast
+        self.ttl_calc = SignalTTLCalculator(self.settings)
+        self.conf_calc = SignalConfidenceCalculator(self.settings)
+        self.prob_model = TennisProbabilityModel(self.settings)
+        self.snap = EngineSnapshot()
+        self._lock = asyncio.Lock()
+        self._seq = 0
+
+    def set_connection_status(self, status: ConnectionStatus) -> None:
+        self.snap.connection_status = status
+        if status == ConnectionStatus.DISCONNECTED:
+            asyncio.create_task(self._cancel_all(ExpirationReason.CONNECTION_LOST))
+
+    async def _cancel_all(self, reason: ExpirationReason) -> None:
+        async with self._lock:
+            now = time.time() * 1000.0
+            for sig in list(self.snap.signals.values()):
+                if sig.status == SignalStatus.ACTIVE:
+                    sig.cancel(reason, server_now_ms=now)
+                    await self._emit_signal_update(sig)
+
+    def register_match(
+        self,
+        *,
+        match_id: str,
+        player_a: str,
+        player_b: str,
+        tournament: Optional[str],
+        market_ticker: str,
+        market_db_id: str,
+        now_ms: float | None = None,
+    ) -> MatchContext:
+        now = now_ms or time.time() * 1000.0
+        obs = self.settings.initial_observation_seconds * 1000
+        ctx = MatchContext(
+            match_id=match_id,
+            player_a=player_a,
+            player_b=player_b,
+            tournament=tournament,
+            market_ticker=market_ticker,
+            market_db_id=market_db_id,
+            observation_started_ms=now,
+            observation_ends_ms=now + obs,
+            analysis_mode=AnalysisMode.OBSERVING.value,
+            display_state=SignalType.STUDYING_MATCH,
+        )
+        self.snap.matches[market_ticker] = ctx
+        if market_ticker not in self.snap.analyzers:
+            self.snap.analyzers[market_ticker] = RollingMarketAnalyzer(
+                market_ticker, self.settings.window_sizes
+            )
+        return ctx
+
+    async def on_market_update(
+        self,
+        ticker: str,
+        *,
+        yes_bid: Optional[float] = None,
+        yes_ask: Optional[float] = None,
+        last_trade: Optional[float] = None,
+        volume: Optional[float] = None,
+        imbalance: Optional[float] = None,
+        depth_yes: Optional[float] = None,
+        depth_no: Optional[float] = None,
+        status: Optional[str] = None,
+        ts_ms: Optional[float] = None,
+    ) -> None:
+        async with self._lock:
+            analyzer = self.snap.analyzers.get(ticker)
+            if not analyzer:
+                analyzer = RollingMarketAnalyzer(ticker, self.settings.window_sizes)
+                self.snap.analyzers[ticker] = analyzer
+            market = analyzer.update(
+                yes_bid=yes_bid,
+                yes_ask=yes_ask,
+                last_trade=last_trade,
+                volume=volume,
+                imbalance=imbalance,
+                depth_yes=depth_yes,
+                depth_no=depth_no,
+                status=status,
+                ts_ms=ts_ms,
+            )
+            await self._evaluate_market(ticker, market)
+
+    async def _evaluate_market(self, ticker: str, market: MarketState) -> None:
+        now = time.time() * 1000.0
+        ctx = self.snap.matches.get(ticker)
+        if not ctx:
+            return
+
+        # Connection / stale / market status checks invalidate active signals
+        await self._validate_active_signal(ctx, market, now)
+
+        if self.snap.connection_status != ConnectionStatus.CONNECTED:
+            ctx.display_state = SignalType.DATA_DELAY
+            return
+
+        status_u = (market.status or "").upper()
+        if status_u in ("CLOSED", "SETTLED"):
+            ctx.display_state = SignalType.NO_BET
+            return
+        if status_u == "SUSPENDED":
+            ctx.display_state = SignalType.NO_BET
+            return
+
+        # Observation period — show studying even if a poll batch is slightly behind
+        if now < ctx.observation_ends_ms:
+            ctx.analysis_mode = AnalysisMode.OBSERVING.value
+            ctx.display_state = SignalType.STUDYING_MATCH
+            ctx.confirmation_count = 0
+            return
+
+        if market.data_age_ms > self.settings.max_data_age_ms:
+            ctx.display_state = SignalType.DATA_DELAY
+            return
+
+        # Cooldown after exit
+        if now < ctx.cooldown_until_ms:
+            ctx.analysis_mode = AnalysisMode.COOLDOWN.value
+            ctx.display_state = SignalType.KEEP_WATCHING
+            return
+
+        if ctx.signals_emitted >= self.settings.max_signals_per_match:
+            ctx.display_state = SignalType.NO_BET
+            return
+
+        tennis = ctx.tennis
+        ctx.analysis_mode = (
+            AnalysisMode.TENNIS_ENHANCED.value
+            if tennis and tennis.available
+            else AnalysisMode.MARKET_ONLY.value
+        )
+
+        # Evaluate YES on player_a (primary market convention)
+        player = market_yes_player(ctx, market)
+        prob = self.prob_model.estimate(
+            player=player, market=market, tennis=tennis, direction="YES"
+        )
+        ctx.last_model = prob
+
+        # Anti-chase: track best ask when edge first appeared
+        ask = market.executable_yes_price()
+        if ctx.best_seen_ask is None or ask < ctx.best_seen_ask:
+            if prob.estimated_net_edge >= self.settings.min_net_edge:
+                ctx.best_seen_ask = ask
+
+        conf = self.conf_calc.calculate(
+            market,
+            prob,
+            confirmation_count=ctx.confirmation_count,
+        )
+
+        # Volatility gate
+        w5 = market.windows.get(5000)
+        if w5 and w5.volatility > 3.5:
+            ctx.display_state = SignalType.MATCH_TOO_VOLATILE
+            ctx.confirmation_count = 0
+            return
+
+        # Check conditions for confirmation accumulation
+        conditions_ok = self._entry_conditions_ok(market, prob, conf.confidence)
+        if conditions_ok:
+            ctx.confirmation_count += 1
+            if ctx.confirmation_count < self.settings.entry_confirmation_count:
+                ctx.display_state = SignalType.CONDITIONS_IMPROVING
+                return
+        else:
+            if ctx.confirmation_count > 0:
+                ctx.display_state = SignalType.WAIT
+            else:
+                if prob.estimated_net_edge > 0.01:
+                    ctx.display_state = SignalType.WAIT
+                elif prob.estimated_net_edge < -0.02:
+                    ctx.display_state = SignalType.NO_BET
+                else:
+                    ctx.display_state = SignalType.KEEP_WATCHING
+            ctx.confirmation_count = max(0, ctx.confirmation_count - 1)
+            return
+
+        # Anti-chase: if ask moved far above best_seen when model first liked it
+        if ctx.best_seen_ask is not None:
+            max_chase = ctx.best_seen_ask + self.settings.max_entry_slippage_cents + 1
+            if ask > max_chase and prob.estimated_net_edge < self.settings.min_net_edge + 0.02:
+                ctx.display_state = SignalType.OPPORTUNITY_MISSED
+                ctx.confirmation_count = 0
+                return
+
+        # Already have active actionable signal for this market?
+        active = self._active_signal_for(ticker)
+        if active and active.is_actionable(now):
+            return
+
+        # Emit signal
+        is_strong = (
+            conf.confidence >= self.settings.strong_bet_confidence
+            and prob.estimated_net_edge >= self.settings.min_net_edge + 0.02
+            and market.spread <= 3
+            and (market.depth_yes + market.depth_no) >= self.settings.min_liquidity_contracts * 1.5
+        )
+        await self._emit_bet_signal(
+            ctx=ctx,
+            market=market,
+            prob=prob,
+            confidence=conf.confidence,
+            strong=is_strong,
+            now_ms=now,
+        )
+
+    def _entry_conditions_ok(
+        self,
+        market: MarketState,
+        prob: ProbabilityResult,
+        confidence: float,
+    ) -> bool:
+        if confidence < self.settings.min_bet_confidence:
+            return False
+        if prob.estimated_net_edge < self.settings.min_net_edge:
+            return False
+        if market.spread > self.settings.max_spread_cents:
+            return False
+        if (market.depth_yes + market.depth_no) < self.settings.min_liquidity_contracts:
+            # Allow when depth unknown (0) only if we have last trade — still require some depth
+            if market.depth_yes + market.depth_no <= 0:
+                return False
+            return False
+        if market.data_age_ms > self.settings.max_data_age_ms:
+            return False
+        # Momentum confirmation: slight supportive or flat, not strongly against
+        w5 = market.windows.get(5000)
+        mom = (w5.momentum if w5 else 0.0) or 0.0
+        if prob.direction == "YES" and mom < -1.5:
+            return False
+        if prob.direction == "NO" and mom > 1.5:
+            return False
+        # Order book confirmation
+        imb = market.imbalance
+        if prob.direction == "YES" and imb < -0.4:
+            return False
+        if prob.direction == "NO" and imb > 0.4:
+            return False
+        status_u = (market.status or "OPEN").upper()
+        if status_u not in ("OPEN", "ACTIVE", ""):
+            return False
+        return True
+
+    async def _validate_active_signal(
+        self, ctx: MatchContext, market: MarketState, now: float
+    ) -> None:
+        sig = self._active_signal_for(ctx.market_ticker)
+        if not sig or sig.status != SignalStatus.ACTIVE:
+            return
+
+        # TTL
+        if now >= sig.expires_at_ms:
+            sig.cancel(ExpirationReason.TTL_EXPIRED, price=market.executable_yes_price(), server_now_ms=now)
+            await self._emit_signal_update(sig)
+            ctx.display_state = SignalType.REANALYZING
+            ctx.confirmation_count = 0
+            return
+
+        # Stale
+        if market.data_age_ms > self.settings.max_data_age_ms:
+            sig.cancel(ExpirationReason.STALE_DATA, price=market.executable_yes_price(), server_now_ms=now)
+            await self._emit_signal_update(sig)
+            return
+
+        # Connection
+        if self.snap.connection_status != ConnectionStatus.CONNECTED:
+            sig.cancel(ExpirationReason.CONNECTION_LOST, price=market.executable_yes_price(), server_now_ms=now)
+            await self._emit_signal_update(sig)
+            return
+
+        status_u = (market.status or "").upper()
+        if status_u == "SUSPENDED":
+            sig.cancel(ExpirationReason.MARKET_SUSPENDED, price=market.executable_yes_price(), server_now_ms=now)
+            await self._emit_signal_update(sig)
+            return
+        if status_u in ("CLOSED", "SETTLED"):
+            sig.cancel(ExpirationReason.MARKET_CLOSED, price=market.executable_yes_price(), server_now_ms=now)
+            await self._emit_signal_update(sig)
+            return
+
+        # Price beyond max entry
+        current = market.executable_yes_price() if sig.direction == "YES" else market.executable_no_price()
+        if current > sig.maximum_entry_price:
+            msg = (
+                f"The market moved from {sig.creation_price:.0f}¢ to {current:.0f}¢ "
+                f"and exceeded maximum entry {sig.maximum_entry_price:.0f}¢. Do not chase."
+            )
+            sig.cancel(ExpirationReason.PRICE_MOVED, price=current, message=msg, server_now_ms=now)
+            await self._emit_signal_update(sig)
+            ctx.display_state = SignalType.DO_NOT_CHASE
+            ctx.confirmation_count = 0
+            return
+
+        # Recompute edge/confidence
+        player = sig.player
+        prob = self.prob_model.estimate(
+            player=player, market=market, tennis=ctx.tennis, direction=sig.direction
+        )
+        conf = self.conf_calc.calculate(market, prob, confirmation_count=self.settings.entry_confirmation_count)
+
+        if prob.estimated_net_edge < self.settings.min_net_edge:
+            sig.cancel(
+                ExpirationReason.EDGE_DISAPPEARED,
+                price=current,
+                server_now_ms=now,
+            )
+            await self._emit_signal_update(sig)
+            ctx.display_state = SignalType.EDGE_DISAPPEARING
+            return
+
+        if conf.confidence < self.settings.min_bet_confidence:
+            sig.cancel(ExpirationReason.CONFIDENCE_DROPPED, price=current, server_now_ms=now)
+            await self._emit_signal_update(sig)
+            return
+
+        if market.spread > self.settings.max_spread_cents:
+            sig.cancel(ExpirationReason.SPREAD_EXPANSION, price=current, server_now_ms=now)
+            await self._emit_signal_update(sig)
+            return
+
+        if (market.depth_yes + market.depth_no) < self.settings.min_liquidity_contracts * 0.5:
+            sig.cancel(ExpirationReason.LIQUIDITY_LOSS, price=current, server_now_ms=now)
+            await self._emit_signal_update(sig)
+            return
+
+        w5 = market.windows.get(5000)
+        mom = (w5.momentum if w5 else 0.0) or 0.0
+        if sig.direction == "YES" and mom < -2.0:
+            sig.cancel(ExpirationReason.MOMENTUM_REVERSAL, price=current, server_now_ms=now)
+            await self._emit_signal_update(sig)
+            return
+        if sig.direction == "NO" and mom > 2.0:
+            sig.cancel(ExpirationReason.MOMENTUM_REVERSAL, price=current, server_now_ms=now)
+            await self._emit_signal_update(sig)
+            return
+
+        imb = market.imbalance
+        if sig.direction == "YES" and imb < -0.55:
+            sig.cancel(ExpirationReason.ORDERBOOK_REVERSAL, price=current, server_now_ms=now)
+            await self._emit_signal_update(sig)
+            return
+
+        # Soft update of live fields
+        sig.market_price = current
+        sig.net_edge = prob.estimated_net_edge
+        sig.confidence = conf.confidence
+        sig.model_probability = prob.model_win_probability
+        sig.lifecycle.append(
+            {
+                "event_type": "updated",
+                "ts_ms": now,
+                "market_price": current,
+                "confidence": conf.confidence,
+                "net_edge": prob.estimated_net_edge,
+            }
+        )
+
+    async def _emit_bet_signal(
+        self,
+        *,
+        ctx: MatchContext,
+        market: MarketState,
+        prob: ProbabilityResult,
+        confidence: float,
+        strong: bool,
+        now_ms: float,
+    ) -> None:
+        # Supersede previous
+        prev = self._active_signal_for(ctx.market_ticker)
+        if prev and prev.status == SignalStatus.ACTIVE:
+            prev.cancel(ExpirationReason.SUPERSEDED, price=market.executable_yes_price(), server_now_ms=now_ms)
+            await self._emit_signal_update(prev)
+
+        ttl = self.ttl_calc.calculate(market, confidence=confidence)
+        ctx.version_counter += 1
+        self._seq += 1
+        signal_id = f"SIG-{_slug(prob.player)}-{_slug(ctx.tournament or 'TEN')}-{self._seq % 100000:05d}"
+
+        ask = market.executable_yes_price() if prob.direction == "YES" else market.executable_no_price()
+        max_entry = ask + self.settings.max_entry_slippage_cents
+
+        sig = LiveSignal(
+            signal_id=signal_id,
+            signal_version=ctx.version_counter,
+            match_id=ctx.match_id,
+            market_id=ctx.market_db_id,
+            market_ticker=ctx.market_ticker,
+            signal_type=SignalType.STRONG_BET_SIGNAL if strong else SignalType.BET_NOW,
+            player=prob.player,
+            direction=prob.direction,
+            created_at_ms=now_ms,
+            expires_at_ms=now_ms + ttl.ttl_ms,
+            original_ttl_ms=ttl.ttl_ms,
+            market_price=ask,
+            target_entry_price=ask,
+            maximum_entry_price=max_entry,
+            model_probability=prob.model_win_probability,
+            net_edge=prob.estimated_net_edge,
+            confidence=confidence,
+            creation_price=ask,
+            tournament=ctx.tournament,
+            analysis_mode=ctx.analysis_mode,
+            confirmation_count=ctx.confirmation_count,
+            lifecycle=[
+                {
+                    "event_type": "created",
+                    "ts_ms": now_ms,
+                    "market_price": ask,
+                    "confidence": confidence,
+                    "net_edge": prob.estimated_net_edge,
+                    "ttl_ms": ttl.ttl_ms,
+                    "ttl_reason": ttl.reason,
+                }
+            ],
+        )
+        self.snap.signals[signal_id] = sig
+        ctx.active_signal_id = signal_id
+        ctx.signals_emitted += 1
+        ctx.display_state = sig.signal_type
+        ctx.confirmation_count = 0
+        self.snap.signal_history.append(sig.to_public_dict(now_ms))
+        if len(self.snap.signal_history) > 500:
+            self.snap.signal_history = self.snap.signal_history[-500:]
+        await self._emit_signal_update(sig)
+        logger.info(
+            "Emitted %s %s ttl=%.1fs edge=%.3f conf=%.1f",
+            sig.signal_type.value,
+            signal_id,
+            ttl.ttl_seconds,
+            prob.estimated_net_edge,
+            confidence,
+        )
+
+    def _active_signal_for(self, ticker: str) -> Optional[LiveSignal]:
+        ctx = self.snap.matches.get(ticker)
+        if not ctx or not ctx.active_signal_id:
+            return None
+        return self.snap.signals.get(ctx.active_signal_id)
+
+    async def _emit_signal_update(self, sig: LiveSignal) -> None:
+        if self.broadcast:
+            await self.broadcast(
+                {
+                    "type": "signal",
+                    "payload": sig.to_public_dict(),
+                }
+            )
+
+    def start_cooldown(self, ticker: str, now_ms: float | None = None) -> None:
+        now = now_ms or time.time() * 1000.0
+        ctx = self.snap.matches.get(ticker)
+        if ctx:
+            ctx.cooldown_until_ms = now + self.settings.reentry_cooldown_seconds * 1000
+            ctx.analysis_mode = AnalysisMode.COOLDOWN.value
+            ctx.display_state = SignalType.KEEP_WATCHING
+
+    def tick_expirations(self) -> list[LiveSignal]:
+        """Called periodically to expire TTL without waiting for market tick."""
+        now = time.time() * 1000.0
+        expired: list[LiveSignal] = []
+        for sig in self.snap.signals.values():
+            if sig.status == SignalStatus.ACTIVE and now >= sig.expires_at_ms:
+                sig.cancel(ExpirationReason.TTL_EXPIRED, price=sig.market_price, server_now_ms=now)
+                expired.append(sig)
+        return expired
+
+    def dashboard_payload(self) -> dict[str, Any]:
+        now = time.time() * 1000.0
+        cards = []
+        for ticker, ctx in self.snap.matches.items():
+            analyzer = self.snap.analyzers.get(ticker)
+            market = analyzer.state if analyzer else None
+            active = self._active_signal_for(ticker)
+            obs_remaining = max(0.0, ctx.observation_ends_ms - now)
+            cards.append(
+                {
+                    "match_id": ctx.match_id,
+                    "player_a": ctx.player_a,
+                    "player_b": ctx.player_b,
+                    "tournament": ctx.tournament,
+                    "market_ticker": ticker,
+                    "market_status": market.status if market else "UNKNOWN",
+                    "kalshi_probability": (market.mid / 100.0) if market else None,
+                    "yes_bid": market.yes_bid if market else None,
+                    "yes_ask": market.yes_ask if market else None,
+                    "spread": market.spread if market else None,
+                    "liquidity": (market.depth_yes + market.depth_no) if market else None,
+                    "momentum": (market.windows.get(5000).momentum if market and market.windows.get(5000) else None),
+                    "orderbook_pressure": market.imbalance if market else None,
+                    "model_probability": ctx.last_model.model_win_probability if ctx.last_model else None,
+                    "estimated_edge": ctx.last_model.estimated_net_edge if ctx.last_model else None,
+                    "confidence": None,
+                    "analysis_mode": ctx.analysis_mode,
+                    "display_state": ctx.display_state.value,
+                    "observation_remaining_ms": obs_remaining,
+                    "observation_remaining_display": format_mmss(obs_remaining),
+                    "signals_emitted": ctx.signals_emitted,
+                    "cooldown_remaining_ms": max(0.0, ctx.cooldown_until_ms - now),
+                    "data_age_ms": market.data_age_ms if market else None,
+                    "tennis": ctx.tennis.to_dict() if ctx.tennis else {"available": False, "analysis_note": "MARKET-ONLY ANALYSIS"},
+                    "active_signal": active.to_public_dict(now) if active else None,
+                    "market_snapshot": analyzer.snapshot() if analyzer else None,
+                }
+            )
+
+        actionable = [
+            s.to_public_dict(now)
+            for s in self.snap.signals.values()
+            if s.is_actionable(now)
+        ]
+        # Safety: filter any that somehow aren't actionable
+        actionable = [s for s in actionable if s["actionable"] and s["remaining_ms"] > 0]
+
+        return {
+            "server_time_ms": now,
+            "connection_status": self.snap.connection_status.value,
+            "live_match_count": len(self.snap.matches),
+            "matches": cards,
+            "actionable_signals": actionable,
+            "signal_history": self.snap.signal_history[-50:],
+            "no_live_markets": len(self.snap.matches) == 0,
+            "message": "NO LIVE TENNIS MARKETS" if len(self.snap.matches) == 0 else None,
+        }
+
+
+def format_mmss(ms: float) -> str:
+    total = int(max(0, ms) / 1000)
+    m, s = divmod(total, 60)
+    return f"{m:02d}:{s:02d}"
+
+
+def market_yes_player(ctx: MatchContext, market: MarketState) -> str:
+    return ctx.player_a
