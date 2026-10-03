@@ -232,13 +232,21 @@ class KalshiReadOnlyClient:
         found: list[dict[str, Any]] = []
         seen: set[str] = set()
 
-        # Singles match-winner contracts, including challengers. Main-tour
-        # markets alone hide the matches that are actually on court.
+        # Match-winner contracts, including challenger, ITF, and doubles.
+        # Tour scoreboards hide the matches that are actually on court.
         preferred_series = (
             "KXWTAMATCH",
             "KXATPMATCH",
             "KXWTACHALLENGERMATCH",
             "KXATPCHALLENGERMATCH",
+            "KXITFMATCH",
+            "KXITFWMATCH",
+            "KXITFDOUBLES",
+            "KXITFWDOUBLES",
+            "KXATPDOUBLES",
+            "KXWTADOUBLES",
+            "KXATPCHALLENGERDOUBLES",
+            "KXMIXEDDOUBLESMATCH",
             "KXTENNISMATCH",
         )
 
@@ -257,13 +265,13 @@ class KalshiReadOnlyClient:
             # Preferred first, then others (cap to avoid rate limits)
             ordered: list[str] = []
             for p in preferred_series:
-                if p in tennis_series and p not in ordered:
+                if p not in ordered:
                     ordered.append(p)
             for st in tennis_series:
                 if st and st not in ordered:
                     ordered.append(st)
 
-            for st in ordered[:16]:
+            for st in ordered[:24]:
                 if not st:
                     continue
                 try:
@@ -324,6 +332,14 @@ class KalshiReadOnlyClient:
             "KXATPMATCH",
             "KXWTACHALLENGERMATCH",
             "KXATPCHALLENGERMATCH",
+            "KXITFMATCH",
+            "KXITFWMATCH",
+            "KXITFDOUBLES",
+            "KXITFWDOUBLES",
+            "KXATPDOUBLES",
+            "KXWTADOUBLES",
+            "KXATPCHALLENGERDOUBLES",
+            "KXMIXEDDOUBLESMATCH",
         )
         match_only = [
             m
@@ -334,7 +350,7 @@ class KalshiReadOnlyClient:
             found = match_only
 
         logger.info("Discovered %d tennis-related Kalshi markets", len(found))
-        return found[:160]
+        return found[:400]
 
 
 # Explicit guard: ensure module never defines write helpers

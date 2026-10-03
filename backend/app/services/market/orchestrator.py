@@ -98,10 +98,9 @@ def parse_players_from_market(market: dict[str, Any]) -> tuple[str, str, Optiona
 
     # Match label from rules: "Sakkari vs Svitolina"
     matchup = None
-    m = re.search(
-        r"([A-Z][a-zA-Z.\-']+(?:\s+[A-Z][a-zA-Z.\-']+)*)\s+vs\.?\s+([A-Z][a-zA-Z.\-']+(?:\s+[A-Z][a-zA-Z.\-']+)*)",
-        rules,
-    )
+    name = r"[A-Z][a-zA-Z.\-']+(?:\s+[A-Z][a-zA-Z.\-']+)*"
+    side = rf"{name}(?:\s*/\s*{name})*"
+    m = re.search(rf"({side})\s+vs\.?\s+({side})", rules)
     if m:
         matchup = f"{m.group(1)} vs {m.group(2)}"
 
@@ -304,7 +303,20 @@ class MarketOrchestrator:
         """One list call per series updates every tracked market's bid/ask."""
         if not self.engine.snap.matches:
             return
-        for series in ("KXWTAMATCH", "KXATPMATCH", "KXWTACHALLENGERMATCH", "KXATPCHALLENGERMATCH"):
+        for series in (
+            "KXWTAMATCH",
+            "KXATPMATCH",
+            "KXWTACHALLENGERMATCH",
+            "KXATPCHALLENGERMATCH",
+            "KXITFMATCH",
+            "KXITFWMATCH",
+            "KXITFDOUBLES",
+            "KXITFWDOUBLES",
+            "KXATPDOUBLES",
+            "KXWTADOUBLES",
+            "KXATPCHALLENGERDOUBLES",
+            "KXMIXEDDOUBLESMATCH",
+        ):
             try:
                 data = await self.client.get_markets(status="open", series_ticker=series, limit=200)
             except Exception as exc:
@@ -413,7 +425,7 @@ class MarketOrchestrator:
             try:
                 await self._link_scoreboard()
             except Exception as exc:
-                logger.debug("Tennis loop: %s", exc)
+                logger.warning("Tennis loop: %s", exc)
             try:
                 await asyncio.wait_for(
                     self._stop.wait(), timeout=self.settings.tennis_poll_interval_seconds
@@ -484,3 +496,8 @@ class MarketOrchestrator:
         if linked and linked != self._linked_tickers and self.ws:
             await self.ws.subscribe_markets(sorted(linked))
         self._linked_tickers = linked
+        logger.info(
+            "Scoreboard link: %d markets checked, %d live contracts",
+            len(self._market_meta),
+            len(linked),
+        )

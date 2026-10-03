@@ -30,6 +30,33 @@ def test_matchup_keeps_both_words_before_vs():
     assert opponent == "Martin Manzano"
 
 
+def test_doubles_matchup_keeps_both_teams():
+    yes, opponent, _match = parse_players_from_market(
+        {
+            "yes_sub_title": "Pearce / Yamakita",
+            "title": "Pearce / Yamakita wins",
+            "rules_primary": (
+                "If Pearce / Yamakita wins the Pearce / Yamakita vs Kamper / Kruger "
+                "professional tennis match, the market resolves."
+            ),
+        }
+    )
+    assert yes == "Pearce / Yamakita"
+    assert opponent == "Kamper / Kruger"
+    assert same_match(
+        "Pearce / Yamakita",
+        "Kamper / Kruger",
+        "Erin Pearce / Mia Yamakita",
+        "Emma Malmkjaer Kamper / Isabella Kruger",
+    )
+    assert same_match(
+        "Luis Guto Miguel / Eduardo Ribeiro",
+        "Mariano Kestelboim / Marcelo Zormann",
+        "Eduardo Ribeiro / Luis Felipe Miguel",
+        "Marcelo Zormann / Mariano Kestelboim",
+    )
+
+
 def test_same_players_match_in_either_order():
     assert same_match("Elena Rybakina", "Alina Charaeva", "Alina Charaeva", "Elena Rybakina")
     assert not same_match("Elena Rybakina", "Alina Charaeva", "Lois Boisson", "Erika Andreeva")

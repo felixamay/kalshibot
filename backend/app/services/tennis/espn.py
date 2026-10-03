@@ -51,8 +51,25 @@ def _tokens(name: str) -> set[str]:
     return set(_NAME_WORD.findall((name or "").lower()))
 
 
+def _team_parts(name: str) -> list[str]:
+    if "/" not in (name or ""):
+        return []
+    return [part.strip() for part in name.split("/") if part.strip()]
+
+
+def _person_loose(left: str, right: str) -> bool:
+    if last_name(left) and last_name(left) == last_name(right):
+        return True
+    return _shares_long_token(left, right)
+
+
 def same_player(left: str, right: str) -> bool:
     """True when two feeds name the same player, including 'Last, First'."""
+    left_team, right_team = _team_parts(left), _team_parts(right)
+    if len(left_team) == 2 and len(right_team) == 2:
+        straight = _person_loose(left_team[0], right_team[0]) and _person_loose(left_team[1], right_team[1])
+        swapped = _person_loose(left_team[0], right_team[1]) and _person_loose(left_team[1], right_team[0])
+        return straight or swapped
     a, b = _tokens(left), _tokens(right)
     if not a or not b:
         return False
