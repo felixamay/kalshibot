@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 
+from app.services.market.orchestrator import parse_players_from_market
 from app.services.signals.engine import SignalEngine, match_is_live
 from app.services.tennis.espn import (
     EspnLiveMatch,
@@ -14,9 +15,37 @@ from app.services.tennis.espn import (
 from tests.test_patterns import settings
 
 
+def test_matchup_keeps_both_words_before_vs():
+    yes, opponent, _match = parse_players_from_market(
+        {
+            "yes_sub_title": "Matthew William Donald",
+            "title": "Matthew William Donald wins",
+            "rules_primary": (
+                "If Matthew William Donald wins the Martin Manzano vs Donald "
+                "professional tennis match, the market resolves."
+            ),
+        }
+    )
+    assert yes == "Matthew William Donald"
+    assert opponent == "Martin Manzano"
+
+
 def test_same_players_match_in_either_order():
     assert same_match("Elena Rybakina", "Alina Charaeva", "Alina Charaeva", "Elena Rybakina")
     assert not same_match("Elena Rybakina", "Alina Charaeva", "Lois Boisson", "Erika Andreeva")
+    assert same_match("Clement Chidekh", "Henry Bernet", "Chidekh, Clement", "Bernet, Henry")
+    assert same_match(
+        "Juan Cruz Martin Manzano",
+        "Matthew William Donald",
+        "Martin, Juan",
+        "Donald, Matthew William",
+    )
+    assert same_match(
+        "Matthew William Donald",
+        "Martin Manzano",
+        "Juan Martin",
+        "Matthew William Donald",
+    )
 
 
 def test_only_in_progress_matches_are_parsed_and_the_score_follows_the_yes_player():

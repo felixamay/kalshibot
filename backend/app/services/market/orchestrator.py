@@ -99,7 +99,7 @@ def parse_players_from_market(market: dict[str, Any]) -> tuple[str, str, Optiona
     # Match label from rules: "Sakkari vs Svitolina"
     matchup = None
     m = re.search(
-        r"\b([A-Z][a-zA-Z.\-']+)\s+vs\.?\s+([A-Z][a-zA-Z.\-']+)\b",
+        r"([A-Z][a-zA-Z.\-']+(?:\s+[A-Z][a-zA-Z.\-']+)*)\s+vs\.?\s+([A-Z][a-zA-Z.\-']+(?:\s+[A-Z][a-zA-Z.\-']+)*)",
         rules,
     )
     if m:
@@ -423,7 +423,7 @@ class MarketOrchestrator:
 
     async def _link_scoreboard(self) -> None:
         """Show a Kalshi contract only while ESPN says that match is in progress."""
-        from app.services.tennis.espn import last_name, same_match
+        from app.services.tennis.espn import same_match, same_player
 
         live = await self.tennis.list_live_matches()
         if live is None:
@@ -462,7 +462,7 @@ class MarketOrchestrator:
             ctx.tennis = oriented
             self.engine.note_serves(ctx)
             full_a, full_b = state.player_a, state.player_b
-            if last_name(player_a) == last_name(full_b):
+            if same_player(player_a, full_b) and not same_player(player_a, full_a):
                 full_a, full_b = full_b, full_a
             ctx.player_a, ctx.player_b = full_a or player_a, full_b or player_b
             if tournament:

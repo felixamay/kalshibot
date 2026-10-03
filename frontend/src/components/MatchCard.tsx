@@ -184,7 +184,7 @@ function ScoreLink({ tennis }: { tennis?: MatchCardType["tennis"] }) {
           {" "}
           ·{" "}
           <a href={href} target="_blank" rel="noreferrer" className="text-signal-mint underline">
-            ESPN score
+            {href.includes("espn.com") ? "ESPN score" : "Live score"}
           </a>
         </>
       ) : null}

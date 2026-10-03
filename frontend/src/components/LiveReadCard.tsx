@@ -44,7 +44,7 @@ export function LiveReadCard({
                     rel="noreferrer"
                     className="underline"
                   >
-                    ESPN score
+                    {match.tennis.source_url.includes("espn.com") ? "ESPN score" : "Live score"}
                   </a>
                 </>
               ) : null}
