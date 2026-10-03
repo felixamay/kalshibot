@@ -33,6 +33,14 @@ from app.services.signals.match_phase import (
     mark_position,
     side_mark_price,
 )
+from app.services.signals.patterns import (
+    PatternAssessment,
+    PatternEngine,
+    PatternHealthView,
+    book_from_market,
+    combine_exit_decision,
+    series_from_ticks,
+)
 from app.services.signals.mispricing import (
     MarketRead,
     assess_market,
@@ -61,6 +69,20 @@ _SLIP_STATES = {
     "SLIPPING": SignalType.SLIPPING,
     "STOP_EXIT_SIGNAL": SignalType.STOP_EXIT_SIGNAL,
 }
+_PATTERN_STATES = {
+    "SEARCHING": SignalType.SEARCHING_FOR_ENTRY,
+    "PATTERN_DEVELOPING": SignalType.PATTERN_DEVELOPING,
+    "PATTERN_WATCH": SignalType.PATTERN_WATCH,
+    "PATTERN_ENTRY_SIGNAL": SignalType.PATTERN_ENTRY_SIGNAL,
+    "STRONG_PATTERN_SIGNAL": SignalType.STRONG_PATTERN_SIGNAL,
+    "PATTERN_ALREADY_ADVANCED": SignalType.PATTERN_ALREADY_ADVANCED,
+    "FAILED_BREAKOUT": SignalType.FAILED_BREAKOUT,
+    "PATTERN_HEALTHY": SignalType.PATTERN_HEALTHY,
+    "PATTERN_WEAKENING": SignalType.PATTERN_WEAKENING,
+    "PATTERN_AT_RISK": SignalType.PATTERN_AT_RISK,
+    "PATTERN_BROKEN": SignalType.PATTERN_BROKEN,
+}
+_PATTERN_ENTRIES = {"PATTERN_ENTRY_SIGNAL", "STRONG_PATTERN_SIGNAL"}
 
 BroadcastFn = Callable[[dict[str, Any]], Awaitable[None]]
 
@@ -104,6 +126,8 @@ class MatchContext:
     last_entry: Optional[EntryView] = None
     last_slip: Optional[SlipView] = None
     slip_confirmation: int = 0
+    last_pattern: Optional[PatternAssessment] = None
+    last_pattern_health: Optional[PatternHealthView] = None
     phase_events: list[dict[str, Any]] = field(default_factory=list)
 
 
@@ -133,6 +157,7 @@ class SignalEngine:
         self.ttl_calc = SignalTTLCalculator(self.settings)
         self.conf_calc = SignalConfidenceCalculator(self.settings)
         self.prob_model = TennisProbabilityModel(self.settings)
+        self.pattern_engine = PatternEngine(self.settings)
         self.snap = EngineSnapshot()
         self._lock = asyncio.Lock()
         self._seq = 0
@@ -252,11 +277,14 @@ class SignalEngine:
                 ctx.hold_reason = "Market is suspended. No entry."
             return
 
-        # Observation period — publish the read, but never a BET NOW.
+        # Observation period — learn patterns, but never a BET NOW.
         if now < ctx.observation_ends_ms:
             ctx.analysis_mode = AnalysisMode.OBSERVING.value
             ctx.display_state = SignalType.STUDYING_MATCH
             ctx.confirmation_count = 0
+            if self.settings.pattern_engine_enabled:
+                ctx.last_pattern = self._assess_pattern(ctx, market, now)
+            learned = len(self.pattern_engine.match_memory.get(ctx.market_ticker, []))
             if ctx.last_model is not None and ctx.last_confidence is not None:
                 preview = assess_market(
                     self.settings,
@@ -270,7 +298,8 @@ class SignalEngine:
                 ctx.last_read = preview
                 ctx.hold_reason = (
                     "STUDYING MATCH. No BET SIGNAL until the observation clock ends. "
-                    "Learning this match's own volatility, spread, liquidity, and momentum. "
+                    "Learning this match's own volatility, spread, liquidity, and repeating patterns. "
+                    f"Patterns recorded: {learned}. "
                     + preview.explanation
                 )
             else:
@@ -386,9 +415,38 @@ class SignalEngine:
         ctx.baseline = build_baseline(ticks, self.settings)
         return ctx.baseline
 
+    def _pattern_points(self, ctx: MatchContext) -> list:
+        analyzer = self.snap.analyzers.get(ctx.market_ticker)
+        ticks = analyzer.ticks_since(ctx.observation_started_ms) if analyzer else []
+        return series_from_ticks(ticks)
+
+    def _assess_pattern(self, ctx: MatchContext, market: MarketState, now: float) -> PatternAssessment:
+        edge = 0.0
+        if ctx.last_read is not None:
+            edge = ctx.last_read.uncertainty_adjusted_edge
+        elif ctx.last_model is not None:
+            edge = ctx.last_model.estimated_net_edge
+        book = book_from_market(market, self.settings, edge)
+        window = market.windows.get(5000)
+        if window and (window.volatility or 0) > self.settings.extreme_volatility:
+            book.extreme = True
+        baseline = ctx.baseline.normal_volatility if ctx.baseline else None
+        return self.pattern_engine.assess(
+            ticker=ctx.market_ticker,
+            points=self._pattern_points(ctx),
+            book=book,
+            confirmation_count=ctx.confirmation_count,
+            tournament=ctx.tournament,
+            player_a=ctx.player_a,
+            player_b=ctx.player_b,
+            tennis=ctx.tennis,
+            baseline_volatility_override=baseline,
+            now_ms=now,
+        )
+
     async def _evaluate_entry(self, ctx: MatchContext, market: MarketState, now: float) -> None:
         ticker = ctx.market_ticker
-        baseline = self._ensure_baseline(ctx, ticker)
+        self._ensure_baseline(ctx, ticker)
         tennis = ctx.tennis
         ctx.analysis_mode = (
             AnalysisMode.TENNIS_ENHANCED.value
@@ -411,6 +469,111 @@ class SignalEngine:
             best_seen_ask=ctx.best_seen_ask,
         )
         ctx.last_read = read
+        if not self.settings.pattern_engine_enabled:
+            await self._evaluate_legacy_entry(ctx, market, now, prob, read)
+            return
+        view = self._assess_pattern(ctx, market, now)
+        if view.confirming:
+            ctx.confirmation_count += 1
+            view = self._assess_pattern(ctx, market, now)
+        elif view.decision in ("FAILED_BREAKOUT", "PATTERN_ALREADY_ADVANCED", "SEARCHING"):
+            ctx.confirmation_count = 0 if view.decision != "SEARCHING" else max(0, ctx.confirmation_count - 1)
+        ctx.last_pattern = view
+        ask = market.executable_yes_price() if view.player_side != "NO" else market.executable_no_price()
+        if ask <= 0:
+            ask = view.current_price
+        view.current_price = ask
+        view.entry_zone_low = round(ask - 1.0, 2)
+        view.entry_zone_high = round(ask + 1.0, 2)
+        view.maximum_entry_price = round(ask + self.settings.max_entry_slippage_cents, 2)
+        if view.entry_score >= self.settings.pattern_watch_score and (
+            ctx.best_seen_ask is None or ask < ctx.best_seen_ask
+        ):
+            ctx.best_seen_ask = ask
+
+        active = self._active_signal_for(ticker)
+        if active and active.is_actionable(now):
+            book_text = " ".join(view.blockers)
+            book_broke = any(
+                phrase in book_text
+                for phrase in ("Liquidity", "Spread", "stale", "extreme")
+            )
+            still_valid = (
+                view.pattern_type == (active.pattern_type or view.pattern_type)
+                and view.decision not in ("FAILED_BREAKOUT", "PATTERN_ALREADY_ADVANCED", "SEARCHING")
+                and view.stage not in ("LATE", "COMPLETED")
+                and ask <= active.maximum_entry_price
+                and not view.orderbook_only
+                and bool(view.pattern_type)
+                and not book_broke
+            )
+            if not still_valid:
+                if ask > active.maximum_entry_price:
+                    reason = ExpirationReason.PRICE_MOVED
+                    message = "DO NOT ENTER. PRICE MOVED BEYOND ENTRY WINDOW."
+                elif view.decision == "PATTERN_ALREADY_ADVANCED":
+                    reason = ExpirationReason.PATTERN_INVALIDATED
+                    message = "PATTERN INVALIDATED. Pattern progressed beyond ideal entry zone."
+                else:
+                    reason = ExpirationReason.PATTERN_INVALIDATED
+                    message = "PATTERN INVALIDATED. " + (view.explanation or "The pattern is no longer confirmed.")
+                self.pattern_engine.record_expiry(view.pattern_type or active.pattern_type or "")
+                active.cancel(reason, price=ask, message=message, server_now_ms=now)
+                await self._emit_signal_update(active)
+                ctx.confirmation_count = 0
+            else:
+                ctx.display_state = active.signal_type
+                ctx.hold_reason = view.explanation
+                return
+
+        state = _PATTERN_STATES.get(view.decision, SignalType.SEARCHING_FOR_ENTRY)
+        ctx.display_state = state
+        ctx.hold_reason = view.explanation
+        self._remember_phase(ctx, state, now)
+        if view.decision in _PATTERN_ENTRIES:
+            if ctx.signals_emitted >= self.settings.max_signals_per_match:
+                ctx.display_state = SignalType.DO_NOT_ENTER
+                ctx.hold_reason = (
+                    f"This match already produced {ctx.signals_emitted} signals. "
+                    f"The cap is {self.settings.max_signals_per_match}."
+                )
+                return
+            self.pattern_engine.record_signal(
+                view.pattern_type,
+                similarity=view.similarity,
+                confidence=view.confidence,
+                entry_score=view.entry_score,
+                progress=view.progress,
+            )
+            await self._emit_bet_signal(
+                ctx=ctx,
+                market=market,
+                prob=prob,
+                confidence=view.entry_score,
+                strong=view.decision == "STRONG_PATTERN_SIGNAL",
+                now_ms=now,
+                read=read,
+                signal_kind=(
+                    SignalType.STRONG_PATTERN_SIGNAL
+                    if view.decision == "STRONG_PATTERN_SIGNAL"
+                    else SignalType.PATTERN_ENTRY_SIGNAL
+                ),
+                max_entry_override=view.maximum_entry_price,
+                player_name=view.player,
+                trade_direction=view.player_side,
+                pattern=view,
+            )
+
+    async def _evaluate_legacy_entry(
+        self,
+        ctx: MatchContext,
+        market: MarketState,
+        now: float,
+        prob: ProbabilityResult,
+        read: MarketRead,
+    ) -> None:
+        """Previous entry-score path, used only when the pattern engine is turned off."""
+        baseline = ctx.baseline or self._ensure_baseline(ctx, ctx.market_ticker)
         view = assess_entry(
             self.settings,
             market,
@@ -435,50 +598,28 @@ class SignalEngine:
                 player_a=ctx.player_a,
                 player_b=ctx.player_b,
             )
-        elif view.decision == "ENTRY_DEVELOPING":
-            ctx.confirmation_count = ctx.confirmation_count
-        else:
+        elif view.decision != "ENTRY_DEVELOPING":
             ctx.confirmation_count = max(0, ctx.confirmation_count - 1)
         ctx.last_entry = view
         ask = view.current_price
-        if view.entry_score >= self.settings.watch_entry_score and (
-            ctx.best_seen_ask is None or ask < ctx.best_seen_ask
-        ):
-            ctx.best_seen_ask = ask
-
-        active = self._active_signal_for(ticker)
-        if active and active.is_actionable(now):
-            if view.decision not in ("ENTRY_SIGNAL", "STRONG_ENTRY_SIGNAL"):
-                reason = (
-                    ExpirationReason.PRICE_MOVED
-                    if ask > active.maximum_entry_price
-                    else ExpirationReason.EDGE_DISAPPEARED
-                )
-                message = (
-                    "DO NOT ENTER. PRICE MOVED BEYOND ENTRY WINDOW."
-                    if reason == ExpirationReason.PRICE_MOVED
-                    else "ENTRY CANCELLED. CONDITIONS CHANGED."
-                )
-                active.cancel(reason, price=ask, message=message, server_now_ms=now)
-                await self._emit_signal_update(active)
-                ctx.confirmation_count = 0
-            else:
-                ctx.display_state = active.signal_type
-                ctx.hold_reason = view.explanation
-                return
-
+        active = self._active_signal_for(ctx.market_ticker)
+        if active and active.is_actionable(now) and view.decision not in ("ENTRY_SIGNAL", "STRONG_ENTRY_SIGNAL"):
+            reason = (
+                ExpirationReason.PRICE_MOVED
+                if ask > active.maximum_entry_price
+                else ExpirationReason.EDGE_DISAPPEARED
+            )
+            active.cancel(reason, price=ask, server_now_ms=now)
+            await self._emit_signal_update(active)
+            ctx.confirmation_count = 0
+        elif active and active.is_actionable(now):
+            ctx.display_state = active.signal_type
+            ctx.hold_reason = view.explanation
+            return
         state = _ENTRY_STATES.get(view.decision, SignalType.SEARCHING_FOR_ENTRY)
         ctx.display_state = state
         ctx.hold_reason = view.explanation
-        self._remember_phase(ctx, state, now)
         if view.decision in ("ENTRY_SIGNAL", "STRONG_ENTRY_SIGNAL"):
-            if ctx.signals_emitted >= self.settings.max_signals_per_match:
-                ctx.display_state = SignalType.DO_NOT_ENTER
-                ctx.hold_reason = (
-                    f"This match already produced {ctx.signals_emitted} signals. "
-                    f"The cap is {self.settings.max_signals_per_match}."
-                )
-                return
             await self._emit_bet_signal(
                 ctx=ctx,
                 market=market,
@@ -544,9 +685,49 @@ class SignalEngine:
             emergency_forced=emergency_forced,
         )
         ctx.last_slip = view
-        state = _SLIP_STATES.get(view.decision, SignalType.HOLD)
+        health = None
+        if self.settings.pattern_engine_enabled and position.pattern_type:
+            book = book_from_market(market, self.settings)
+            if position.direction == "NO":
+                book.price = price
+                book.imbalance = -book.imbalance
+            health = self.pattern_engine.monitor(
+                ticker=ctx.market_ticker,
+                points=self._pattern_points(ctx),
+                book=book,
+                entry_price=position.entry_price,
+                peak_price=position.peak_price,
+                entered_at_ms=position.entered_at_ms,
+                now_ms=now,
+                pattern_type=position.pattern_type,
+                expected_move=position.expected_move,
+                typical_duration_ms=position.typical_duration_ms,
+                entry_imbalance=position.entry_imbalance,
+                volatility=baseline.normal_volatility,
+                tennis=ctx.tennis,
+            )
+            ctx.last_pattern_health = health
+        if health is not None:
+            combined = combine_exit_decision(
+                pattern_health=health.health,
+                pattern_broken=health.broken,
+                slip_decision=view.decision,
+                slip_score=view.slip_score,
+                emergency=view.emergency or emergency_forced,
+                settings=self.settings,
+            )
+            if combined == "STOP_EXIT_SIGNAL" and health.broken:
+                state = SignalType.PATTERN_BROKEN
+            else:
+                state = _PATTERN_STATES.get(combined) or _SLIP_STATES.get(combined, SignalType.HOLD)
+            ctx.hold_reason = (
+                f"{health.explanation} Slip score {view.slip_score:.0f}. "
+                "Nothing is sold automatically."
+            )
+        else:
+            state = _SLIP_STATES.get(view.decision, SignalType.HOLD)
+            ctx.hold_reason = view.explanation
         ctx.display_state = state
-        ctx.hold_reason = view.explanation
         ctx.analysis_mode = "POSITION"
         self._remember_phase(ctx, state, now)
 
@@ -580,6 +761,7 @@ class SignalEngine:
             spread = market.spread
         model_p = ctx.last_model.model_win_probability if ctx.last_model else 0.5
         score = ctx.last_entry.entry_score if ctx.last_entry else (ctx.last_confidence or 0.0)
+        pattern = ctx.last_pattern
         ctx.position = TrackedPosition(
             position_id=position_id,
             player=player,
@@ -592,18 +774,29 @@ class SignalEngine:
             entry_liquidity=depth,
             entry_spread=spread,
             entry_model_probability=model_p if direction == "YES" else 1.0 - model_p,
-            entry_signal_score=score,
+            entry_signal_score=pattern.entry_score if pattern else score,
             entry_trade_flow=mom,
             peak_price=entry_price,
             current_price=entry_price,
+            pattern_id=pattern.pattern_id if pattern else "",
+            pattern_type=pattern.pattern_type if pattern else "",
+            pattern_stage=pattern.stage if pattern else "",
+            pattern_confidence=pattern.confidence if pattern else 0.0,
+            pattern_entry_score=pattern.entry_score if pattern else score,
+            expected_move=pattern.expected_move if pattern else 0.0,
+            typical_duration_ms=pattern.typical_duration_ms if pattern else 0.0,
         )
         ctx.slip_confirmation = 0
         ctx.confirmation_count = 0
         ctx.cooldown_until_ms = 0.0
-        ctx.display_state = SignalType.HOLD
-        ctx.hold_reason = "Position recorded. Watching whether it stays healthy. No order was sent."
+        ctx.display_state = SignalType.PATTERN_HEALTHY if pattern and pattern.pattern_type else SignalType.HOLD
+        ctx.hold_reason = (
+            "PATTERN MONITOR MODE. Is the pattern still valid? "
+            f"Recorded {pattern.pattern_name if pattern else 'the position'} "
+            f"at {entry_price:.0f}¢. No order was sent."
+        )
         ctx.analysis_mode = "POSITION"
-        self._remember_phase(ctx, SignalType.HOLD, now)
+        self._remember_phase(ctx, ctx.display_state, now)
 
     def close_position(self, ticker: str, now_ms: float | None = None) -> None:
         ctx = self.snap.matches.get(ticker)
@@ -735,7 +928,12 @@ class SignalEngine:
             )
             sig.cancel(ExpirationReason.PRICE_MOVED, price=current, message=msg, server_now_ms=now)
             await self._emit_signal_update(sig)
-            if sig.signal_type in (SignalType.ENTRY_SIGNAL, SignalType.STRONG_ENTRY_SIGNAL):
+            if sig.signal_type in (
+                SignalType.ENTRY_SIGNAL,
+                SignalType.STRONG_ENTRY_SIGNAL,
+                SignalType.PATTERN_ENTRY_SIGNAL,
+                SignalType.STRONG_PATTERN_SIGNAL,
+            ):
                 ctx.display_state = SignalType.DO_NOT_ENTER
                 ctx.hold_reason = "DO NOT ENTER. PRICE MOVED BEYOND ENTRY WINDOW. DO NOT CHASE."
             else:
@@ -743,9 +941,14 @@ class SignalEngine:
             ctx.confirmation_count = 0
             return
 
-        if sig.signal_type in (SignalType.ENTRY_SIGNAL, SignalType.STRONG_ENTRY_SIGNAL):
-            # Hard safety already ran. The entry pass cancels the signal if the
-            # timing score breaks. Do not apply the old fixed-edge cancel here.
+        if sig.signal_type in (
+            SignalType.ENTRY_SIGNAL,
+            SignalType.STRONG_ENTRY_SIGNAL,
+            SignalType.PATTERN_ENTRY_SIGNAL,
+            SignalType.STRONG_PATTERN_SIGNAL,
+        ):
+            # Hard safety already ran. Pattern and entry passes cancel the signal
+            # when the setup breaks. Do not apply the old fixed-edge cancel here.
             return
 
         # Recompute edge against the current book's dynamic threshold.
@@ -850,6 +1053,7 @@ class SignalEngine:
         max_entry_override: float | None = None,
         player_name: str | None = None,
         trade_direction: str | None = None,
+        pattern: PatternAssessment | None = None,
     ) -> None:
         # Supersede previous
         prev = self._active_signal_for(ctx.market_ticker)
@@ -890,6 +1094,15 @@ class SignalEngine:
             tournament=ctx.tournament,
             analysis_mode=ctx.analysis_mode,
             confirmation_count=ctx.confirmation_count,
+            pattern_type=pattern.pattern_type if pattern else "",
+            pattern_name=pattern.pattern_name if pattern else "",
+            pattern_similarity=pattern.similarity if pattern else None,
+            pattern_confidence=pattern.confidence if pattern else None,
+            pattern_entry_score=pattern.entry_score if pattern else None,
+            entry_zone_low=pattern.entry_zone_low if pattern else None,
+            entry_zone_high=pattern.entry_zone_high if pattern else None,
+            pattern_progress=pattern.progress if pattern else None,
+            pattern_stage=pattern.stage if pattern else "",
             lifecycle=[
                 {
                     "event_type": "created",
@@ -1003,6 +1216,8 @@ class SignalEngine:
                     "baseline": ctx.baseline.as_dict() if ctx.baseline else None,
                     "entry": ctx.last_entry.as_dict() if ctx.last_entry else None,
                     "slip": ctx.last_slip.as_dict() if ctx.last_slip else None,
+                    "pattern": ctx.last_pattern.as_dict() if ctx.last_pattern else None,
+                    "pattern_health": ctx.last_pattern_health.as_dict() if ctx.last_pattern_health else None,
                     "phase_events": ctx.phase_events[-12:],
                     "position": _position_payload(ctx),
                 }
@@ -1045,6 +1260,12 @@ def _position_payload(ctx: MatchContext) -> dict[str, Any] | None:
         "drawdown_from_peak": pos.drawdown_from_peak,
         "slip_score": slip.slip_score if slip else None,
         "health": slip.health if slip else None,
+        "pattern_health": ctx.last_pattern_health.health if ctx.last_pattern_health else None,
+        "pattern_id": pos.pattern_id,
+        "pattern_type": pos.pattern_type,
+        "pattern_stage": pos.pattern_stage,
+        "pattern_confidence": pos.pattern_confidence,
+        "pattern_entry_score": pos.pattern_entry_score,
         "status": ctx.display_state.value,
         "entered_at_ms": pos.entered_at_ms,
     }

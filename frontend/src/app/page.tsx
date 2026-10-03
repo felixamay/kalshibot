@@ -11,6 +11,8 @@ import { useLiveFeed } from "@/hooks/useLiveFeed";
 import type { LiveSignal } from "@/lib/types";
 
 const BET_STATES = new Set([
+  "STRONG_PATTERN_SIGNAL",
+  "PATTERN_ENTRY_SIGNAL",
   "STRONG_ENTRY_SIGNAL",
   "ENTRY_SIGNAL",
   "STRONG_BET_SIGNAL",
@@ -43,27 +45,37 @@ export default function HomePage() {
   const rankedMatches = useMemo(() => {
     const matches = dashboard?.matches ?? [];
     const group: Record<string, number> = {
+      STRONG_PATTERN_SIGNAL: 0,
       STRONG_ENTRY_SIGNAL: 0,
       STRONG_BET_SIGNAL: 0,
+      PATTERN_ENTRY_SIGNAL: 1,
       ENTRY_SIGNAL: 1,
       BET_SIGNAL: 1,
       BET_NOW: 1,
+      PATTERN_BROKEN: 2,
       STOP_EXIT_SIGNAL: 2,
+      PATTERN_AT_RISK: 3,
       SLIPPING: 3,
-      ENTRY_DEVELOPING: 4,
-      CLOSE_TO_SIGNAL: 4,
-      WATCH_CLOSELY: 5,
-      WATCH: 5,
+      PATTERN_WEAKENING: 4,
+      PATTERN_WATCH: 5,
+      PATTERN_DEVELOPING: 5,
+      ENTRY_DEVELOPING: 5,
+      CLOSE_TO_SIGNAL: 5,
+      WATCH_CLOSELY: 6,
+      WATCH: 6,
       SEARCHING_FOR_ENTRY: 6,
-      STUDYING_MATCH: 7,
-      HOLD: 8,
-      COOLDOWN: 9,
-      DO_NOT_ENTER: 10,
-      NO_BET: 10,
+      PATTERN_ALREADY_ADVANCED: 7,
+      FAILED_BREAKOUT: 7,
+      STUDYING_MATCH: 8,
+      PATTERN_HEALTHY: 9,
+      HOLD: 9,
+      COOLDOWN: 10,
+      DO_NOT_ENTER: 11,
+      NO_BET: 11,
     };
     const rank = (m: (typeof matches)[number]) =>
       (group[m.display_state] ?? 6) * 1000 -
-      (m.entry?.entry_score ?? m.read?.opportunity_score ?? 0);
+      (m.pattern?.entry_score ?? m.entry?.entry_score ?? m.read?.opportunity_score ?? 0);
     return [...matches].sort((a, b) => rank(a) - rank(b));
   }, [dashboard]);
 
@@ -200,7 +212,7 @@ export default function HomePage() {
           </div>
         ) : (
           <div className="border border-dashed border-white/15 p-5 font-mono text-sm text-mist/60">
-            No match needs a bet right now. Entry signals will show here, above the rest of the board.
+            No match needs a bet right now. Confirmed pattern entry signals show here, above the rest of the board.
           </div>
         )}
       </section>

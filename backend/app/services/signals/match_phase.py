@@ -104,6 +104,13 @@ class TrackedPosition:
     peak_price: float
     current_price: float = 0.0
     drawdown_from_peak: float = 0.0
+    pattern_id: str = ""
+    pattern_type: str = ""
+    pattern_stage: str = ""
+    pattern_confidence: float = 0.0
+    pattern_entry_score: float = 0.0
+    expected_move: float = 0.0
+    typical_duration_ms: float = 0.0
 
 
 @dataclass

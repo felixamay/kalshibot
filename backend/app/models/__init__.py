@@ -364,3 +364,96 @@ class SystemEvent(Base):
     category: Mapped[str] = mapped_column(String(64))
     message: Mapped[str] = mapped_column(Text)
     detail_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+
+class PatternDefinition(Base):
+    __tablename__ = "pattern_definitions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    pattern_type: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(128))
+    family: Mapped[str] = mapped_column(String(64))
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+
+class PatternInstanceRecord(Base):
+    __tablename__ = "pattern_instances"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    match_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True, index=True)
+    market_ticker: Mapped[str] = mapped_column(String(128), index=True)
+    pattern_type: Mapped[str] = mapped_column(String(64), index=True)
+    player_side: Mapped[str] = mapped_column(String(8), default="YES")
+    start_timestamp: Mapped[float] = mapped_column(Float)
+    end_timestamp: Mapped[float] = mapped_column(Float)
+    start_price: Mapped[float] = mapped_column(Float)
+    lowest_price: Mapped[float] = mapped_column(Float)
+    highest_price: Mapped[float] = mapped_column(Float)
+    recovery_price: Mapped[float] = mapped_column(Float)
+    duration: Mapped[float] = mapped_column(Float)
+    price_change: Mapped[float] = mapped_column(Float)
+    volatility: Mapped[float] = mapped_column(Float)
+    spread: Mapped[float] = mapped_column(Float)
+    liquidity: Mapped[float] = mapped_column(Float)
+    orderbook_before: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    orderbook_during: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    orderbook_after: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    trade_flow: Mapped[float] = mapped_column(Float, default=0)
+    result: Mapped[str] = mapped_column(String(32), default="open")
+    success_or_failure: Mapped[str] = mapped_column(String(32), default="open")
+
+
+class PatternFeature(Base):
+    __tablename__ = "pattern_features"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    pattern_id: Mapped[str] = mapped_column(String(64), index=True)
+    normalized_pullback: Mapped[float] = mapped_column(Float, default=0)
+    normalized_recovery: Mapped[float] = mapped_column(Float, default=0)
+    volatility: Mapped[float] = mapped_column(Float, default=0)
+    spread: Mapped[float] = mapped_column(Float, default=0)
+    liquidity: Mapped[float] = mapped_column(Float, default=0)
+    trade_flow: Mapped[float] = mapped_column(Float, default=0)
+    feature_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+
+class PatternResultRecord(Base):
+    __tablename__ = "pattern_results"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    pattern_id: Mapped[str] = mapped_column(String(64), index=True)
+    result: Mapped[str] = mapped_column(String(32))
+    success_or_failure: Mapped[str] = mapped_column(String(32))
+    price_change: Mapped[float] = mapped_column(Float, default=0)
+    duration: Mapped[float] = mapped_column(Float, default=0)
+    favorable_move: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    adverse_move: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+
+
+class PatternSimilarityRecord(Base):
+    __tablename__ = "pattern_similarity"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    pattern_id: Mapped[str] = mapped_column(String(64), index=True)
+    compared_to: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    score: Mapped[float] = mapped_column(Float, default=0)
+    cluster_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    cluster_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+
+
+class PatternPerformance(Base):
+    __tablename__ = "pattern_performance"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    pattern_type: Mapped[str] = mapped_column(String(64), index=True)
+    occurrences: Mapped[int] = mapped_column(Integer, default=0)
+    successful_continuations: Mapped[int] = mapped_column(Integer, default=0)
+    failed_patterns: Mapped[int] = mapped_column(Integer, default=0)
+    entry_signals: Mapped[int] = mapped_column(Integer, default=0)
+    late_entries: Mapped[int] = mapped_column(Integer, default=0)
+    false_positives: Mapped[int] = mapped_column(Integer, default=0)
+    expiries: Mapped[int] = mapped_column(Integer, default=0)
+    average_similarity: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    average_confidence: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    average_entry_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    low_sample_size: Mapped[bool] = mapped_column(Boolean, default=True)

@@ -137,8 +137,9 @@ export function LiveReadCard({
         </ul>
       )}
       <p className="mt-3 font-mono text-[11px] uppercase tracking-wider text-mist/40">
-        A bet signal needs confidence of at least 80, a dynamic net edge, and 3
-        confirming updates. 90 is signal confidence, not a 90% win probability.
+        A pattern entry needs a setup this match has already shown, confirmation,
+        and a book that still agrees. One price spike is not a bet. Nothing here
+        is a guaranteed win, and every order is placed by you on Kalshi.
         WATCH is not an instruction to bet.
       </p>
     </section>

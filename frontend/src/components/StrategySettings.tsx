@@ -60,7 +60,67 @@ const FIELDS: Array<{ key: string; label: string; tip: string; step: string }> =
   {
     key: "max_signals_per_match",
     label: "Maximum signals per match",
-    tip: "Cap on BET SIGNAL and STRONG BET SIGNAL emissions for one match.",
+    tip: "Cap on entry signals for one match.",
+    step: "1",
+  },
+  {
+    key: "pattern_watch_score",
+    label: "Pattern watch score",
+    tip: "Show PATTERN WATCH at this entry score. A watch is not an instruction to bet.",
+    step: "1",
+  },
+  {
+    key: "pattern_entry_score",
+    label: "Pattern entry score",
+    tip: "Minimum pattern entry score. Still needs confirmation, a fresh book, and a pattern that has repeated.",
+    step: "1",
+  },
+  {
+    key: "strong_pattern_entry_score",
+    label: "Strong pattern score",
+    tip: "STRONG PATTERN SIGNAL score. This is not a guaranteed result.",
+    step: "1",
+  },
+  {
+    key: "min_pattern_confidence",
+    label: "Minimum pattern confidence",
+    tip: "Pattern confidence required before an entry signal. Not a win probability.",
+    step: "1",
+  },
+  {
+    key: "pattern_confirmation_count",
+    label: "Pattern confirmations",
+    tip: "How many confirming updates a setup needs. One similar wiggle is not enough.",
+    step: "1",
+  },
+  {
+    key: "pattern_late_stage_percent",
+    label: "Late pattern percent",
+    tip: "Do not enter after the pattern has already traveled this much of its typical move.",
+    step: "1",
+  },
+  {
+    key: "pattern_completed_percent",
+    label: "Completed pattern percent",
+    tip: "Treat the pattern as finished at this progress. No entry.",
+    step: "1",
+  },
+  {
+    key: "pattern_weaken_health",
+    label: "Weakening health",
+    tip: "Below this pattern health, show PATTERN WEAKENING.",
+    step: "1",
+  },
+  {
+    key: "pattern_risk_health",
+    label: "At-risk health",
+    tip: "Below this pattern health, prepare to exit.",
+    step: "1",
+  },
+  {
+    key: "pattern_broken_health",
+    label: "Broken health",
+    tip: "Below this pattern health, the pattern is broken and the exit warning fires. Nothing is sold automatically.",
     step: "1",
   },
 ];

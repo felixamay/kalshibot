@@ -226,7 +226,8 @@ def test_max_entry_price_formula():
 
 
 @pytest.mark.asyncio
-async def test_engine_emits_bet_signal_without_requiring_a_high_price():
+async def test_flat_mispricing_does_not_emit_without_a_pattern():
+    """A cheap contract with edge is not a bet unless a pattern has repeated."""
     s = settings()
     s.initial_observation_seconds = 0
     engine = SignalEngine(s)
@@ -256,73 +257,9 @@ async def test_engine_emits_bet_signal_without_requiring_a_high_price():
             imbalance=0.2,
             status="OPEN",
         )
-    emitted = list(engine.snap.signals.values())
-    assert emitted
-    assert emitted[0].signal_type in (
-        SignalType.ENTRY_SIGNAL,
-        SignalType.STRONG_ENTRY_SIGNAL,
-        SignalType.BET_SIGNAL,
-        SignalType.STRONG_BET_SIGNAL,
-    )
-    assert emitted[0].is_actionable()
-    assert emitted[0].maximum_entry_price > 42
-    assert emitted[0].expires_at_ms > emitted[0].created_at_ms
-    assert emitted[0].remaining_ms(emitted[0].created_at_ms) > 0
-
-
-@pytest.mark.asyncio
-async def test_signal_expires_when_edge_falls_below_dynamic_threshold():
-    s = settings()
-    s.initial_observation_seconds = 0
-    engine = SignalEngine(s)
-    engine.snap.connection_status = ConnectionStatus.CONNECTED
-    now = time.time() * 1000.0
-    engine.register_match(
-        match_id="m1",
-        player_a="Player A",
-        player_b="Player B",
-        tournament="Test",
-        market_ticker="KXTEST",
-        market_db_id="mk1",
-        now_ms=now - 5_000,
-    )
-    state = {"net": 0.05, "model": 0.49, "market": 0.42}
-
-    def fake_estimate(**kwargs):
-        return priced(
-            model=state["model"],
-            market_prob=state["market"],
-            net_edge=state["net"],
-            source="tennis_enhanced",
-        )
-
-    engine.prob_model.estimate = fake_estimate  # type: ignore[method-assign]
-    for _ in range(3):
-        await engine.on_market_update(
-            "KXTEST",
-            yes_bid=41,
-            yes_ask=42,
-            depth_yes=1600,
-            depth_no=1200,
-            imbalance=0.2,
-            status="OPEN",
-        )
-    emitted = list(engine.snap.signals.values())
-    assert emitted and emitted[0].is_actionable()
-
-    state["net"] = 0.005
-    state["model"] = 0.425
-    await engine.on_market_update(
-        "KXTEST",
-        yes_bid=41,
-        yes_ask=42,
-        depth_yes=1600,
-        depth_no=1200,
-        imbalance=0.2,
-        status="OPEN",
-    )
-    assert not emitted[0].is_actionable()
-    assert emitted[0].expiration_reason == "EDGE_DISAPPEARED"
+    assert list(engine.snap.signals.values()) == []
+    card = engine.dashboard_payload()["matches"][0]
+    assert card["display_state"] not in ("PATTERN_ENTRY_SIGNAL", "BET_SIGNAL", "ENTRY_SIGNAL")
 
 
 def test_strategy_comparison_does_not_auto_select():

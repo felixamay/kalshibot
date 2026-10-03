@@ -35,7 +35,56 @@ export interface LiveSignal {
   tournament?: string | null;
   analysis_mode?: string;
   server_time_ms: number;
+  pattern_type?: string;
+  pattern_name?: string;
+  pattern_similarity?: number | null;
+  pattern_confidence?: number | null;
+  pattern_entry_score?: number | null;
+  entry_zone_low?: number | null;
+  entry_zone_high?: number | null;
+  pattern_progress?: number | null;
+  pattern_stage?: string;
   lifecycle?: Array<Record<string, unknown>>;
+}
+
+export interface PatternView {
+  decision?: string;
+  pattern_type?: string;
+  pattern_name?: string;
+  pattern_id?: string;
+  player?: string;
+  player_side?: string;
+  similarity?: number;
+  confidence?: number;
+  entry_score?: number;
+  confirmation_count?: number;
+  confirmation_needed?: number;
+  repetition_label?: string;
+  occurrences?: number;
+  successes?: number;
+  failures?: number;
+  success_rate?: number | null;
+  low_sample_size?: boolean;
+  stage?: string;
+  progress?: number;
+  expected_move?: number;
+  current_move?: number;
+  entry_zone_low?: number;
+  entry_zone_high?: number;
+  maximum_entry_price?: number;
+  current_price?: number;
+  explanation?: string;
+  reasons?: string[];
+  blockers?: string[];
+  orderbook_evidence?: string[];
+  support_zones?: Array<{ low: number; high: number; touches: number }>;
+  resistance_zones?: Array<{ low: number; high: number; touches: number }>;
+  timeline?: Array<{ t_ms: number; kind: string; price?: number }>;
+  prior_examples?: Array<Record<string, unknown>>;
+  cluster_name?: string;
+  typical_pullback?: number;
+  typical_recovery?: number;
+  success_note?: string;
 }
 
 export interface MarketRead {
@@ -95,6 +144,17 @@ export interface MatchCard {
   tennis?: Record<string, unknown>;
   active_signal?: LiveSignal | null;
   entry?: { entry_score?: number; decision?: string } | null;
+  pattern?: PatternView | null;
+  pattern_health?: { health?: number; decision?: string; explanation?: string; reasons?: string[] } | null;
+  phase_events?: Array<{ t_ms: number; state: string }>;
+  position?: {
+    entry_price?: number;
+    current_price?: number;
+    peak_price?: number;
+    pattern_type?: string;
+    pattern_health?: number | null;
+    status?: string;
+  } | null;
 }
 
 export interface DashboardPayload {

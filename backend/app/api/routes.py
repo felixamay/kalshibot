@@ -180,6 +180,18 @@ def _strategy_config() -> dict[str, Any]:
         "spread_good_cents": s.spread_good_cents,
         "spread_acceptable_cents": s.spread_acceptable_cents,
         "uncertainty_penalty_high": s.uncertainty_penalty_high,
+        "pattern_engine_enabled": s.pattern_engine_enabled,
+        "min_pattern_occurrences": s.min_pattern_occurrences,
+        "pattern_watch_score": s.pattern_watch_score,
+        "pattern_entry_score": s.pattern_entry_score,
+        "strong_pattern_entry_score": s.strong_pattern_entry_score,
+        "min_pattern_confidence": s.min_pattern_confidence,
+        "pattern_confirmation_count": s.pattern_confirmation_count,
+        "pattern_late_stage_percent": s.pattern_late_stage_percent,
+        "pattern_completed_percent": s.pattern_completed_percent,
+        "pattern_weaken_health": s.pattern_weaken_health,
+        "pattern_risk_health": s.pattern_risk_health,
+        "pattern_broken_health": s.pattern_broken_health,
         "order_placement_enabled": False,
         "read_only_kalshi": True,
     }
@@ -208,13 +220,28 @@ async def update_strategy(
         "entry_confirmation_count",
         "max_signals_per_match",
         "default_signal_ttl_seconds",
+        "pattern_engine_enabled",
+        "min_pattern_occurrences",
+        "pattern_watch_score",
+        "pattern_entry_score",
+        "strong_pattern_entry_score",
+        "min_pattern_confidence",
+        "pattern_confirmation_count",
+        "pattern_late_stage_percent",
+        "pattern_completed_percent",
+        "pattern_weaken_health",
+        "pattern_risk_health",
+        "pattern_broken_health",
     }
     s = get_settings()
     for key, value in body.items():
         if key not in allowed:
             continue
         current = getattr(s, key)
-        setattr(s, key, type(current)(value))
+        if isinstance(current, bool):
+            setattr(s, key, value is True or value == "true")
+        else:
+            setattr(s, key, type(current)(value))
     return _strategy_config()
 
 
@@ -260,12 +287,30 @@ async def manual_enter(
         current_exit_price=body.entry_price,
         position_state="HOLD",
     )
+    pattern_note = body.notes or ""
+    if ctx and ctx.last_pattern:
+        import json
+
+        pattern_note = (
+            pattern_note
+            + "\n"
+            + json.dumps(
+                {
+                    "pattern_id": ctx.last_pattern.pattern_id,
+                    "pattern_type": ctx.last_pattern.pattern_type,
+                    "pattern_stage": ctx.last_pattern.stage,
+                    "pattern_confidence": ctx.last_pattern.confidence,
+                    "pattern_entry_score": ctx.last_pattern.entry_score,
+                    "entry_price": body.entry_price,
+                }
+            )
+        ).strip()
     entry = ManualEntry(
         id=str(uuid4()),
         position_id=position.id,
         entry_price=body.entry_price,
         amount=body.amount,
-        notes=body.notes,
+        notes=pattern_note or None,
     )
     db.add(position)
     db.add(entry)
@@ -454,4 +499,42 @@ async def backtest_strategies() -> dict[str, Any]:
         "illustrative": compare_strategy_profiles(illustrative),
         "recorded": compare_strategy_profiles(recorded) if recorded else None,
         "auto_select_enabled": False,
+    }
+
+
+@router.get("/patterns")
+async def pattern_library() -> dict[str, Any]:
+    """Live pattern memory. Advisory only. Does not place orders."""
+    from app.services.signals.patterns import PATTERN_FAMILIES, pattern_name, performance_report
+
+    engine = get_engine()
+    matches = []
+    if engine:
+        for ticker, rows in engine.pattern_engine.match_memory.items():
+            matches.append(
+                {
+                    "market_ticker": ticker,
+                    "patterns": [row.as_dict() for row in rows[-20:]],
+                }
+            )
+    return {
+        "families": [{"pattern_type": name, "name": pattern_name(name)} for name in PATTERN_FAMILIES],
+        "matches": matches,
+        "performance": performance_report(engine.pattern_engine) if engine else None,
+        "order_placement_enabled": False,
+    }
+
+
+@router.get("/backtest/patterns")
+async def backtest_patterns() -> dict[str, Any]:
+    """Per-pattern descriptive replay. Does not choose a configuration."""
+    from app.services.signals.patterns import illustrative_pattern_backtest, performance_report
+
+    engine = get_engine()
+    live = performance_report(engine.pattern_engine) if engine else None
+    return {
+        "illustrative": illustrative_pattern_backtest(),
+        "live": live,
+        "auto_select_enabled": False,
+        "order_placement_enabled": False,
     }

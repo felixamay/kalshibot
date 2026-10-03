@@ -133,6 +133,46 @@ class Settings(BaseSettings):
     weight_entry_spread: float = 0.05
     weight_entry_reversal: float = 0.05
 
+    # Pattern engine. A detected pattern is not automatically a bet.
+    pattern_engine_enabled: bool = True
+    min_pattern_occurrences: int = 2
+    pattern_watch_score: float = 65.0
+    pattern_entry_score: float = 75.0
+    strong_pattern_entry_score: float = 87.0
+    min_pattern_confidence: float = 70.0
+    strong_pattern_confidence: float = 85.0
+    pattern_confirmation_count: int = 3
+    pattern_late_stage_percent: float = 75.0
+    pattern_completed_percent: float = 95.0
+    pattern_weaken_health: float = 60.0
+    pattern_risk_health: float = 40.0
+    pattern_broken_health: float = 25.0
+    min_pattern_sample: int = 5
+    # Current match outweighs older tennis markets. Not claimed to be optimal.
+    weight_memory_current: float = 1.0
+    weight_memory_tournament: float = 0.55
+    weight_memory_historical: float = 0.30
+    # Pattern confidence weights. Not claimed to be optimal.
+    weight_pattern_similarity: float = 0.25
+    weight_pattern_repetition: float = 0.20
+    weight_pattern_historical: float = 0.15
+    weight_pattern_book: float = 0.15
+    weight_pattern_momentum: float = 0.10
+    weight_pattern_flow: float = 0.05
+    weight_pattern_liquidity: float = 0.05
+    weight_pattern_spread: float = 0.03
+    weight_pattern_reversal: float = 0.02
+    # Pattern entry-score weights. Not claimed to be optimal.
+    weight_pattern_entry_confidence: float = 0.30
+    weight_pattern_entry_history: float = 0.15
+    weight_pattern_entry_price: float = 0.15
+    weight_pattern_entry_book: float = 0.15
+    weight_pattern_entry_momentum: float = 0.10
+    weight_pattern_entry_flow: float = 0.05
+    weight_pattern_entry_liquidity: float = 0.05
+    weight_pattern_entry_spread: float = 0.03
+    weight_pattern_entry_reversal: float = 0.02
+
     # Slip-score weights. Not claimed to be optimal.
     weight_slip_price: float = 0.25
     weight_slip_book: float = 0.20

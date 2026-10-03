@@ -72,6 +72,17 @@ export function PrimarySignalCard({
           <p className="mt-3 font-display text-xl md:text-3xl text-mist">
             {signal.player} — {signal.direction}
           </p>
+          {signal.pattern_name && (
+            <p className="mt-2 font-mono text-xs uppercase tracking-widest text-mist/70">
+              {signal.pattern_name}
+              {signal.pattern_similarity != null
+                ? ` · similarity ${Math.round(signal.pattern_similarity)}%`
+                : ""}
+              {signal.pattern_confidence != null
+                ? ` · confidence ${Math.round(signal.pattern_confidence)}`
+                : ""}
+            </p>
+          )}
         </div>
         <div className="text-right font-mono text-xs text-mist/60">
           <div>v{signal.signal_version}</div>
@@ -81,6 +92,12 @@ export function PrimarySignalCard({
 
       <div className="mt-6 grid grid-cols-2 md:grid-cols-4 gap-4 font-mono">
         <Metric label="Current" value={`${Math.round(signal.market_price)}¢`} />
+        {signal.entry_zone_low != null && signal.entry_zone_high != null && (
+          <Metric
+            label="Entry zone"
+            value={`${Math.round(signal.entry_zone_low)}–${Math.round(signal.entry_zone_high)}¢`}
+          />
+        )}
         <Metric
           label="Max Entry"
           value={`${Math.round(signal.maximum_entry_price)}¢`}

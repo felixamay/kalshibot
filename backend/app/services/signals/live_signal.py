@@ -45,6 +45,15 @@ class LiveSignal:
     tournament: Optional[str] = None
     analysis_mode: str = "MARKET_ONLY"
     confirmation_count: int = 0
+    pattern_type: str = ""
+    pattern_name: str = ""
+    pattern_similarity: Optional[float] = None
+    pattern_confidence: Optional[float] = None
+    pattern_entry_score: Optional[float] = None
+    entry_zone_low: Optional[float] = None
+    entry_zone_high: Optional[float] = None
+    pattern_progress: Optional[float] = None
+    pattern_stage: str = ""
     lifecycle: list[dict[str, Any]] = field(default_factory=list)
 
     def remaining_ms(self, server_now_ms: float | None = None) -> float:
@@ -170,6 +179,15 @@ class LiveSignal:
             "analysis_mode": self.analysis_mode,
             "server_time_ms": now,
             "confirmation_count": self.confirmation_count,
+            "pattern_type": self.pattern_type,
+            "pattern_name": self.pattern_name,
+            "pattern_similarity": self.pattern_similarity,
+            "pattern_confidence": self.pattern_confidence,
+            "pattern_entry_score": self.pattern_entry_score,
+            "entry_zone_low": self.entry_zone_low,
+            "entry_zone_high": self.entry_zone_high,
+            "pattern_progress": self.pattern_progress,
+            "pattern_stage": self.pattern_stage,
             "lifecycle": self.lifecycle[-20:],
             # Never leave BET NOW visible when not actionable
             "display_label": _display_label(self, actionable, now),
@@ -178,7 +196,12 @@ class LiveSignal:
 
 
 def _entry_type(signal: LiveSignal) -> bool:
-    return signal.signal_type in (SignalType.ENTRY_SIGNAL, SignalType.STRONG_ENTRY_SIGNAL)
+    return signal.signal_type in (
+        SignalType.ENTRY_SIGNAL,
+        SignalType.STRONG_ENTRY_SIGNAL,
+        SignalType.PATTERN_ENTRY_SIGNAL,
+        SignalType.STRONG_PATTERN_SIGNAL,
+    )
 
 
 def _display_label(signal: LiveSignal, actionable: bool, now: float) -> str:
@@ -186,6 +209,8 @@ def _display_label(signal: LiveSignal, actionable: bool, now: float) -> str:
         return signal_display_label(signal.signal_type)
     if _entry_type(signal) and signal.expiration_reason == ExpirationReason.PRICE_MOVED:
         return "DO NOT ENTER"
+    if _entry_type(signal) and signal.expiration_reason == ExpirationReason.PATTERN_INVALIDATED:
+        return "PATTERN INVALIDATED"
     if _entry_type(signal) and signal.expiration_reason == ExpirationReason.EDGE_DISAPPEARED:
         return "ENTRY CANCELLED"
     if signal.expiration_reason == ExpirationReason.TTL_EXPIRED or (
@@ -202,6 +227,8 @@ def _display_sublabel(signal: LiveSignal, actionable: bool) -> str | None:
         return None
     if _entry_type(signal) and signal.expiration_reason == ExpirationReason.PRICE_MOVED:
         return "PRICE MOVED BEYOND ENTRY WINDOW"
+    if _entry_type(signal) and signal.expiration_reason == ExpirationReason.PATTERN_INVALIDATED:
+        return "PATTERN PROGRESSED BEYOND IDEAL ENTRY ZONE"
     if _entry_type(signal) and signal.expiration_reason == ExpirationReason.EDGE_DISAPPEARED:
         return "CONDITIONS CHANGED"
     if signal.expiration_reason in (ExpirationReason.TTL_EXPIRED, None):
