@@ -662,6 +662,11 @@ class PatternEngine:
         threshold = max(floor * 1.1, vol * 1.1)
         zone_width = max(1.5, vol * 1.5)
         swings = find_swings(points, threshold)
+        # Count what this match already knew. A pattern stored during this pass
+        # is the discovery, not a bet.
+        prior_counts: dict[str, int] = {}
+        for item in self.match_memory.get(ticker, []):
+            prior_counts[item.pattern_type] = prior_counts.get(item.pattern_type, 0) + 1
         self._store_completed(ticker, points, swings, vol, threshold, tournament, zone_width)
         lows = [price for _, price, kind in swings if kind == "LOW"]
         highs = [price for _, price, kind in swings if kind == "HIGH"]
@@ -778,7 +783,7 @@ class PatternEngine:
             confirming_signals=len(signals),
             book=book,
             evidence=evidence,
-            discovered=len(same) >= 1,
+            discovered=prior_counts.get(pattern_type, 0) >= 1,
         )
         if decision in ("PATTERN_ENTRY_SIGNAL", "STRONG_PATTERN_SIGNAL"):
             timeline.append({"t_ms": now_ms or (points[-1].ts_ms if points else 0), "kind": "entry_signal", "price": book.price})
@@ -809,6 +814,7 @@ class PatternEngine:
             reasons=reasons,
             bet_headline=headline,
             bet_detail=detail,
+            already_discovered=prior_counts.get(pattern_type, 0) >= 1,
         )
         return PatternAssessment(
             decision=decision,
@@ -1689,7 +1695,7 @@ class PatternEngine:
         if decision == "FAILED_BREAKOUT":
             return "FAILED BREAKOUT. NO ENTRY. Price crossed resistance and fell back."
         if decision == "PATTERN_DEVELOPING":
-            if kwargs.get("occurrences", 0) < 1:
+            if not kwargs.get("already_discovered"):
                 return (
                     "PATTERN DISCOVERING. No bet until this pattern has been seen in this live match. "
                     + base

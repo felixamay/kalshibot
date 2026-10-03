@@ -201,6 +201,29 @@ def test_a_pattern_about_to_begin_alerts_without_three_confirmations():
     assert forming.tradeable is False
     assert "discovered" in forming.explanation.lower() or "discovering" in forming.explanation.lower()
 
+    # The pass that first records the pattern is discovery. The bet waits for a later one.
+    first = fresh.assess(
+        ticker="NEW",
+        points=[make_point(i * 1000, price) for i, price in enumerate([60, 58, 55, 57, 60, 59, 58.2])],
+        book=early_book(58.2),
+        confirmation_count=0,
+        baseline_volatility_override=1,
+        player_a="Player A",
+    )
+    assert first.tradeable is False
+    remembered = [item for item in fresh.match_memory["NEW"] if item.pattern_type == first.pattern_type or item.pattern_type == "PULLBACK_RECOVERY"]
+    later = fresh.assess(
+        ticker="NEW",
+        points=developing_pullback(),
+        book=early_book(58),
+        confirmation_count=0,
+        baseline_volatility_override=1,
+        player_a="Player A",
+    )
+    if remembered:
+        assert later.decision == "PATTERN_ENTRY_SIGNAL", later.explanation
+        assert later.tradeable is True
+
 
 def test_zero_printed_depth_still_alerts_an_early_pattern():
     """A live quote with no printed size is still a bet. Cerundolo was blocked only by depth 0."""
