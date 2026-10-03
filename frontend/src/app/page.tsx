@@ -50,7 +50,7 @@ function useRotatingBet(signals: LiveSignal[]): LiveSignal | null {
 }
 
 export default function HomePage() {
-  const { dashboard, signals, connection, wsState, serverNow, apiUrl } =
+  const { dashboard, signals, connection, wsState, feedDown, serverNow, apiUrl } =
     useLiveFeed();
   const [alertsEnabled, setAlertsEnabled] = useState(true);
   // Start empty. A useState initializer runs on the server and is not re-run
@@ -284,7 +284,9 @@ export default function HomePage() {
           </div>
         ) : dashboard == null ? (
           <div className="border border-dashed border-white/15 p-5 font-mono text-sm text-mist/60">
-            Checking live matches…
+            {feedDown
+              ? "The live feed is unreachable. Saved matches stay hidden until it reconnects."
+              : "Checking live matches…"}
           </div>
         ) : (
           <div className="border border-dashed border-white/15 p-5 font-mono text-sm text-mist/60">
@@ -322,7 +324,9 @@ export default function HomePage() {
         </div>
         {dashboard == null ? (
           <div className="border border-dashed border-white/15 p-8 text-center font-mono text-sm text-mist/60">
-            Restoring the live board…
+            {feedDown
+              ? "The live feed is unreachable. Saved matches stay hidden until it reconnects."
+              : "Checking live matches…"}
           </div>
         ) : dashboard.no_live_markets || rankedMatches.length === 0 ? (
           <div className="border border-dashed border-white/15 p-8 text-center font-mono text-sm text-mist/60">

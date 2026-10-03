@@ -67,6 +67,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+@app.middleware("http")
+async def do_not_cache_api(request, call_next):
+    """Dashboard JSON must not be stored. A cached board shows finished matches."""
+    response = await call_next(request)
+    path = request.url.path
+    if path.startswith("/api") or path in {"/", "/ws"}:
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Pragma"] = "no-cache"
+    return response
+
 app.include_router(router, prefix="/api")
 
 

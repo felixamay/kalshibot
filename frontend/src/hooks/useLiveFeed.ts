@@ -8,17 +8,30 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 const WS_URL =
   process.env.NEXT_PUBLIC_WS_URL ||
   API_URL.replace(/^http/, "ws") + "/ws";
-const BOARD_KEY = "kt_board";
+const BOARD_KEY = "kt_board_v2";
+/** A reload may paint the last board only for this long. Older saves are finished matches. */
+const BOARD_KEEP_MS = 15_000;
 
 function readCachedBoard(): DashboardPayload | null {
   try {
     const raw = sessionStorage.getItem(BOARD_KEY);
     if (!raw) return null;
-    const parsed = JSON.parse(raw) as DashboardPayload;
-    if (!parsed || !Array.isArray(parsed.matches)) return null;
-    return parsed;
+    const parsed = JSON.parse(raw) as { savedAt?: number; payload?: DashboardPayload };
+    if (!parsed || typeof parsed.savedAt !== "number" || !parsed.payload) return null;
+    if (!Array.isArray(parsed.payload.matches)) return null;
+    if (Date.now() - parsed.savedAt > BOARD_KEEP_MS) return null;
+    return parsed.payload;
   } catch {
     return null;
+  }
+}
+
+function forgetBoard() {
+  try {
+    sessionStorage.removeItem(BOARD_KEY);
+    sessionStorage.removeItem("kt_board");
+  } catch {
+    /* private mode */
   }
 }
 
@@ -34,8 +47,10 @@ export function useLiveFeed() {
   >("RECONNECTING");
   const clockRef = useRef(new ClockSynchronizer());
   const wsRef = useRef<WebSocket | null>(null);
+  const [feedDown, setFeedDown] = useState(false);
   const boardSaveAt = useRef(0);
   const lastBoardAt = useRef(0);
+  const lastGoodAt = useRef(0);
   const [serverNow, setServerNow] = useState(() => Date.now());
 
   const rememberBoard = useCallback((payload: DashboardPayload, force = false) => {
@@ -43,10 +58,19 @@ export function useLiveFeed() {
     if (!force && now - boardSaveAt.current < 4000) return;
     boardSaveAt.current = now;
     try {
-      sessionStorage.setItem(BOARD_KEY, JSON.stringify(payload));
+      sessionStorage.setItem(BOARD_KEY, JSON.stringify({ savedAt: now, payload }));
     } catch {
       /* quota or private mode */
     }
+  }, []);
+
+  const noteFailure = useCallback(() => {
+    const age = Date.now() - lastGoodAt.current;
+    if (lastGoodAt.current !== 0 && age <= BOARD_KEEP_MS) return;
+    setDashboard(null);
+    setSignals({});
+    setFeedDown(true);
+    forgetBoard();
   }, []);
 
   const upsertSignal = useCallback((sig: LiveSignal) => {
@@ -79,6 +103,8 @@ export function useLiveFeed() {
 
   const applyDashboard = useCallback(
     (payload: DashboardPayload) => {
+      lastGoodAt.current = Date.now();
+      setFeedDown(false);
       setDashboard(payload);
       if (payload.connection_status) setConnection(payload.connection_status);
       if (clockRef.current.lastSyncAt === 0 && payload.server_time_ms) {
@@ -181,26 +207,34 @@ export function useLiveFeed() {
 
     connect();
 
-    fetch(`${API_URL}/api/health`)
-      .then((r) => r.json())
+    const loadJson = (path: string) =>
+      fetch(`${API_URL}${path}`, { cache: "no-store", signal: AbortSignal.timeout(8000) }).then(
+        (r) => {
+          if (!r.ok) throw new Error(String(r.status));
+          return r.json();
+        }
+      );
+
+    loadJson("/api/health")
       .then((health: { connection_status?: DashboardPayload["connection_status"] }) => {
         if (!stopped && health.connection_status) setConnection(health.connection_status);
       })
       .catch(() => undefined);
 
-    fetch(`${API_URL}/api/dashboard`)
-      .then((r) => r.json())
+    loadJson("/api/dashboard")
       .then((d: DashboardPayload) => {
         if (!stopped) applyDashboard(d);
       })
-      .catch(() => undefined);
+      .catch(() => {
+        if (!stopped) noteFailure();
+      });
 
     return () => {
       stopped = true;
       if (heartbeatTimer) clearInterval(heartbeatTimer);
       wsRef.current?.close();
     };
-  }, [applyDashboard, upsertSignal]);
+  }, [applyDashboard, noteFailure, upsertSignal]);
 
   // Paint the previous board before the browser shows a blank, disconnected page.
   useLayoutEffect(() => {
@@ -224,13 +258,16 @@ export function useLiveFeed() {
   // If no alert or board arrives, fetch the board over HTTP instead.
   useEffect(() => {
     const pull = () => {
-      fetch(`${API_URL}/api/dashboard`)
-        .then((r) => r.json())
+      fetch(`${API_URL}/api/dashboard`, { cache: "no-store", signal: AbortSignal.timeout(8000) })
+        .then((r) => {
+          if (!r.ok) throw new Error(String(r.status));
+          return r.json();
+        })
         .then((d: DashboardPayload) => {
           lastBoardAt.current = Date.now();
           applyDashboard(d);
         })
-        .catch(() => undefined);
+        .catch(() => noteFailure());
     };
     const id = setInterval(() => {
       const ws = wsRef.current;
@@ -238,7 +275,7 @@ export function useLiveFeed() {
       if (stale || !ws || ws.readyState !== WebSocket.OPEN) pull();
     }, 3000);
     return () => clearInterval(id);
-  }, [applyDashboard]);
+  }, [applyDashboard, noteFailure]);
 
   // Visibility: save the board when leaving, and pull a fresh one when returning.
   useEffect(() => {
@@ -249,23 +286,27 @@ export function useLiveFeed() {
       }
       if (document.visibilityState !== "visible") return;
       setServerNow(clockRef.current.serverNow());
-      fetch(`${API_URL}/api/dashboard`)
-        .then((r) => r.json())
+      fetch(`${API_URL}/api/dashboard`, { cache: "no-store", signal: AbortSignal.timeout(8000) })
+        .then((r) => {
+          if (!r.ok) throw new Error(String(r.status));
+          return r.json();
+        })
         .then((d: DashboardPayload) => {
           lastBoardAt.current = Date.now();
           applyDashboard(d);
         })
-        .catch(() => undefined);
+        .catch(() => noteFailure());
     };
     document.addEventListener("visibilitychange", onVis);
     return () => document.removeEventListener("visibilitychange", onVis);
-  }, [applyDashboard, dashboard, rememberBoard]);
+  }, [applyDashboard, dashboard, noteFailure, rememberBoard]);
 
   return {
     dashboard,
     signals: Object.values(signals),
     connection,
     wsState,
+    feedDown,
     serverNow,
     clock: clockRef.current,
     apiUrl: API_URL,
