@@ -53,14 +53,21 @@ class KalshiWebSocketClient:
             await self.on_status(status)
 
     def _assert_safe_outbound(self, payload: dict[str, Any]) -> None:
+        """Allow market-data subscriptions only. Never send order commands."""
         cmd = str(payload.get("cmd") or payload.get("type") or "").lower()
-        forbidden = {"order", "create_order", "cancel", "amend", "batch_create", "batch_cancel"}
-        blob = json.dumps(payload).lower()
-        if any(f in blob for f in forbidden) or cmd in forbidden:
+        allowed_cmds = {"subscribe", "unsubscribe", "update_subscription"}
+        if cmd not in allowed_cmds:
             raise PermissionError(
-                "BLOCKED: WebSocket order command attempted. "
+                "BLOCKED: WebSocket command is not a market-data subscription. "
                 "This application NEVER places or cancels orders."
             )
+        channels = (payload.get("params") or {}).get("channels") or []
+        allowed_channels = {"orderbook_delta", "ticker", "trade", "market_lifecycle_v2"}
+        for channel in channels:
+            if str(channel) not in allowed_channels:
+                raise PermissionError(
+                    f"BLOCKED: WebSocket channel {channel} is not a read-only market feed."
+                )
 
     async def send(self, payload: dict[str, Any]) -> None:
         self._assert_safe_outbound(payload)

@@ -373,7 +373,21 @@ def test_confidence_is_not_deadlocked_by_confirmation_count():
     asyncio.get_event_loop().run_until_complete(attempt())
 
 
-def test_no_place_order_methods():
+def test_ws_subscribe_allows_orderbook_and_blocks_orders():
+    from app.services.kalshi.websocket import KalshiWebSocketClient
+
+    client = KalshiWebSocketClient(Settings(database_url="sqlite+aiosqlite:///:memory:"))
+    client._assert_safe_outbound(
+        {
+            "cmd": "subscribe",
+            "params": {"channels": ["orderbook_delta", "ticker", "trade"], "market_tickers": ["KX"]},
+        }
+    )
+    with pytest.raises(PermissionError):
+        client._assert_safe_outbound({"cmd": "create_order", "params": {"channels": ["ticker"]}})
+    with pytest.raises(PermissionError):
+        client._assert_safe_outbound({"cmd": "subscribe", "params": {"channels": ["fill"]}})
+
     from app.services.kalshi import client as c
     from app.services.kalshi.client import KalshiReadOnlyClient
 
