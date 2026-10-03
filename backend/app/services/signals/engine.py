@@ -227,8 +227,9 @@ class SignalEngine:
         scheduled_start_ms: float | None = 0.0,
     ) -> MatchContext:
         now = now_ms or time.time() * 1000.0
-        # No 5-minute observation clock. The live stage (first serve, under 85%,
-        # not the last five serves of a clear winner) is what gates a suggestion.
+        # No 5-minute observation clock. A pattern is picked after every two
+        # serves. The first serve and the last five serves of a clear winner
+        # still gate a new suggestion. A price above 85% does not.
         ctx = MatchContext(
             match_id=match_id,
             player_a=player_a,
@@ -354,8 +355,9 @@ class SignalEngine:
             )
             return
 
-        # Discover and suggest only in the early live window. A late price,
-        # a pre-serve score, or a clear winner in the last five serves is not recorded.
+        # The first serve and the last five serves of a clear winner still
+        # hold a new pattern. A favorite above 85% does not: that used to
+        # cancel the bet a second after it was picked and leave the card studying.
         self.note_serves(ctx)
         block = suggestion_block(ctx.tennis, market.mid)
         if block:
@@ -944,8 +946,8 @@ class SignalEngine:
         confidence = ctx.last_confidence
         if observing:
             parts.append(
-                "No pattern is suggested until the match is past the first serve, "
-                "still at or under 85%, and not in the last 5 serves with a clear winner."
+                "No pattern is suggested until the match is past the first serve "
+                "and not in the last 5 serves with a clear winner."
             )
         if prob is None or confidence is None:
             parts.append("Waiting for a usable Kalshi quote.")

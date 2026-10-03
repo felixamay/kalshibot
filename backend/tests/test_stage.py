@@ -26,18 +26,19 @@ def _score(**kwargs) -> TennisLiveState:
     )
 
 
-def test_price_past_85_blocks_and_an_even_price_does_not():
-    assert suggestion_block(None, 90) is not None
-    assert "85" in suggestion_block(None, 90)
-    assert suggestion_block(None, 12) is not None
+def test_a_lopsided_price_does_not_hide_the_pattern():
+    """The favorite crossing 85% used to leave the card studying with no bet."""
+    assert suggestion_block(None, 90) is None
+    assert suggestion_block(None, 12) is None
+    assert suggestion_block(None, 99) is None
     assert suggestion_block(None, 85) is None
     assert suggestion_block(None, 58) is None
     assert suggestion_block(None, 0) is None
 
 
-def test_explicit_game_percent_blocks_above_85():
+def test_explicit_game_percent_does_not_block_a_live_pattern():
     late = _score(game_percent=86, point_score="15-0", game_score="1-0", match_score="0-0")
-    assert "85" in (suggestion_block(late, 55) or "")
+    assert suggestion_block(late, 55) is None
     early = _score(game_percent=70, point_score="15-0", game_score="1-0", match_score="0-0")
     assert suggestion_block(early, 55) is None
 
@@ -73,8 +74,8 @@ async def test_engine_does_not_suggest_outside_the_early_window():
 
     await _play(engine, (90, 89, 88, 87, 87.4, 88))
     card = engine.dashboard_payload()["matches"][0]
-    assert engine.dashboard_payload()["actionable_signals"] == []
-    assert "85" in card["hold_reason"]
+    assert "85" not in (card["hold_reason"] or "")
+    assert card["display_state"] != "STUDYING_MATCH"
 
     engine.snap.matches["KXTEST"].tennis = _score(
         match_score="0-0", game_score="0-0", point_score="0-0"
@@ -125,6 +126,65 @@ async def test_an_early_pattern_is_the_bet_after_two_serves():
     )
     assert signal["pattern_reasons"]
     assert any("pattern to bet" in reason.lower() for reason in signal["pattern_reasons"])
+
+
+@pytest.mark.asyncio
+async def test_a_pattern_bet_stays_when_the_favorite_crosses_85():
+    """The bet that was picked stays for its countdown. 14¢ is inside the window."""
+    engine = _engine()
+    path = (20, 19, 18, 17, 17.4, 18)
+    ctx = engine.snap.matches["KXTEST"]
+    ctx.tennis = _score(match_score="0-0", game_score="2-2", point_score="15-0")
+    engine.note_serves(ctx)
+    ctx.tennis = _score(match_score="0-0", game_score="2-2", point_score="30-0")
+    engine.note_serves(ctx)
+    ctx.tennis = _score(match_score="0-0", game_score="2-2", point_score="30-15")
+    engine.note_serves(ctx)
+    await _play(engine, path)
+    payload = engine.dashboard_payload()
+    assert payload["actionable_signals"], payload["matches"][0]["hold_reason"]
+    signal = payload["actionable_signals"][0]
+    assert signal["maximum_entry_price"] >= 14
+
+    ctx.tennis = _score(match_score="0-0", game_score="2-2", point_score="30-15")
+    await engine.on_market_update(
+        "KXTEST",
+        yes_bid=13.5,
+        yes_ask=14.5,
+        depth_yes=1600,
+        depth_no=700,
+        imbalance=0.32,
+        status="OPEN",
+    )
+    kept = engine.dashboard_payload()
+    assert kept["actionable_signals"], kept["matches"][0]["hold_reason"]
+    assert kept["actionable_signals"][0]["status"] == "ACTIVE"
+    assert kept["matches"][0]["display_state"] in (
+        "PATTERN_ENTRY_SIGNAL",
+        "STRONG_PATTERN_SIGNAL",
+    )
+    assert "85" not in (kept["matches"][0]["hold_reason"] or "")
+
+
+@pytest.mark.asyncio
+async def test_a_pattern_above_85_is_still_the_bet_after_two_serves():
+    engine = _engine()
+    path = (90, 89, 88, 87, 87.4, 88)
+    ctx = engine.snap.matches["KXTEST"]
+    ctx.tennis = _score(match_score="0-0", game_score="3-2", point_score="15-0")
+    engine.note_serves(ctx)
+    ctx.tennis = _score(match_score="0-0", game_score="3-2", point_score="30-0")
+    engine.note_serves(ctx)
+    ctx.tennis = _score(match_score="0-0", game_score="3-2", point_score="30-15")
+    engine.note_serves(ctx)
+    await _play(engine, path)
+    payload = engine.dashboard_payload()
+    assert payload["actionable_signals"], payload["matches"][0]["hold_reason"]
+    assert payload["matches"][0]["display_state"] in (
+        "PATTERN_ENTRY_SIGNAL",
+        "STRONG_PATTERN_SIGNAL",
+    )
+    assert "85" not in (payload["matches"][0]["hold_reason"] or "")
 
 
 def test_a_pattern_waits_for_every_two_serves():

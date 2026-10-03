@@ -136,8 +136,8 @@ export function LiveReadCard({
       )}
       <p className="mt-3 font-mono text-[11px] uppercase tracking-wider text-mist/40">
         A pattern is studied after every two serves, then one pattern is picked to bet.
-        The game still has to be live and at or under 85%. The last 5 serves are skipped
-        when the winner is clear. You place that bet yourself on Kalshi.
+        The game still has to be live. The last 5 serves are skipped when the winner is
+        clear. You place that bet yourself on Kalshi.
       </p>
     </section>
   );

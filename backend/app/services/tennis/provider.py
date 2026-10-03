@@ -33,7 +33,7 @@ class TennisLiveState:
     break_points_b: Optional[int] = None
     first_serve_pct_a: Optional[float] = None
     first_serve_pct_b: Optional[float] = None
-    # Leading side, 0–100. When set, this is the game percentage used for the 85% gate.
+    # Leading side, 0–100, when a provider publishes it. Not a bet gate.
     game_percent: Optional[float] = None
     # Points left if the provider already knows. Last 5 serves blocks a clear winner.
     serves_remaining: Optional[int] = None

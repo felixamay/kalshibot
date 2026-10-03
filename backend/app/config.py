@@ -50,8 +50,9 @@ class Settings(BaseSettings):
     # Confidence is signal confidence, not the player's win probability.
     # The 5-minute clock is abolished. This value is not a wait before a bet.
     # A pattern is studied after every two serves, then one pattern is picked
-    # to bet. Confirmations are not required. The game still has to be live,
-    # at or under 85%, and not in the last five serves when the winner is clear.
+    # to bet. Confirmations are not required. The game still has to be live
+    # and not in the last five serves when the winner is clear. A price above
+    # 85% does not cancel that bet or send the card back to studying.
     initial_observation_seconds: int = Field(
         default=0,
         validation_alias=AliasChoices(

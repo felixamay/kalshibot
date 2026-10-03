@@ -1,9 +1,9 @@
 """Live-match stage for pattern suggestions.
 
-The 5-minute observation clock is not used. A pattern may be suggested only
-after the first serve, while the leading side is still at or under 85%, and
-not in the last five serves when the winner is already clear. A new pattern
-is made only after every two serves.
+The 5-minute observation clock is not used. A pattern is studied after every
+two serves, then one pattern is picked to bet. The match has to be past the
+first serve, and the last five serves are skipped when the winner is already
+clear. A lopsided price does not hide that bet.
 """
 
 from __future__ import annotations
@@ -85,17 +85,11 @@ def pattern_serve_block(serves_seen: int, last_pattern_serve: int) -> Optional[s
 
 
 def suggestion_block(tennis: Any, price_cents: Optional[float]) -> Optional[str]:
-    """Why a pattern must not be suggested. None means the early window is open."""
+    """Why a pattern must not be suggested. None means a pattern can be picked."""
     if _before_first_serve(tennis):
         return (
             "The match has not had a first serve. Observation starts after that serve. "
             "No pattern is suggested yet."
-        )
-    percent = _game_percent(tennis, price_cents)
-    if percent is not None and percent > LATE_GAME_PERCENT:
-        return (
-            f"Game percentage is {percent:.0f}%. "
-            "No pattern is suggested once it passes 85%."
         )
     if _last_serves_and_winner_clear(tennis, price_cents):
         return (
@@ -103,16 +97,6 @@ def suggestion_block(tennis: Any, price_cents: Optional[float]) -> Optional[str]
             "No pattern is suggested."
         )
     return None
-
-
-def _game_percent(tennis: Any, price_cents: Optional[float]) -> Optional[float]:
-    explicit = getattr(tennis, "game_percent", None) if tennis is not None else None
-    if explicit is not None:
-        try:
-            return float(explicit)
-        except (TypeError, ValueError):
-            pass
-    return leading_percent(price_cents)
 
 
 def _before_first_serve(tennis: Any) -> bool:
