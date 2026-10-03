@@ -92,18 +92,23 @@ export default function HomePage() {
   const betSignals = useMemo(() => {
     const fromFeed = signals.filter((s) => {
       const rem = s.expires_at_ms - serverNow;
-      return s.actionable && s.status === "ACTIVE" && rem > 0 && isBetSignal(s);
+      return s.actionable && s.status === "ACTIVE" && rem >= 5000 && isBetSignal(s);
     });
     const fromMatches = betMatches
       .map((m) => m.active_signal)
-      .filter((s): s is LiveSignal => !!s && s.actionable && isBetSignal(s));
-    const merged = [...fromFeed, ...fromMatches];
-    const seen = new Set<string>();
-    return merged.filter((s) => {
-      if (seen.has(s.signal_id)) return false;
-      seen.add(s.signal_id);
-      return true;
-    });
+      .filter((s): s is LiveSignal => {
+        if (!s || !s.actionable || !isBetSignal(s)) return false;
+        return s.expires_at_ms - serverNow >= 5000;
+      });
+    const byMarket = new Map<string, LiveSignal>();
+    for (const signal of [...fromFeed, ...fromMatches]) {
+      const key = signal.market_ticker || signal.signal_id;
+      const current = byMarket.get(key);
+      if (!current || signal.created_at_ms >= current.created_at_ms) {
+        byMarket.set(key, signal);
+      }
+    }
+    return [...byMarket.values()].sort((a, b) => b.created_at_ms - a.created_at_ms);
   }, [signals, serverNow, betMatches]);
 
   useEffect(() => {

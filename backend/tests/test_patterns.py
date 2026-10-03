@@ -492,4 +492,4 @@ async def test_study_clock_does_not_delay_a_pattern_that_is_about_to_begin():
     assert "market" in (payload["actionable_signals"][0].get("market_instruction") or "").lower()
     assert "Pullback" in (payload["actionable_signals"][0].get("pattern_name") or "")
     ttl = payload["actionable_signals"][0].get("original_ttl_ms") or 0
-    assert 12_000 <= ttl <= 15_000
+    assert ttl >= 20_000

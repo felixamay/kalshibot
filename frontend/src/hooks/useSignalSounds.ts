@@ -22,6 +22,7 @@ export function useSignalSounds(
       ctxRef.current = new AudioContext();
     }
     const ctx = ctxRef.current;
+    if (ctx.state === "suspended") void ctx.resume();
     const osc = ctx.createOscillator();
     const g = ctx.createGain();
     osc.frequency.value = freq;

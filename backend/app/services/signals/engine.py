@@ -1112,10 +1112,11 @@ class SignalEngine:
                 direction,
                 pattern.pattern_type,
             )
-            # A pattern can appear in a fraction of a second. Keep the countdown
-            # long enough to read in whole seconds.
-            ttl_ms = max(ttl.ttl_ms, 12_000)
-            ttl_ms = min(ttl_ms, int(self.settings.max_signal_ttl_seconds * 1000))
+            # The bet card has to stay up long enough to read and act.
+            # Never shorter than 20 seconds, even on a thin or fast market.
+            floor_ms = 20_000
+            cap_ms = max(floor_ms, int(self.settings.max_signal_ttl_seconds * 1000))
+            ttl_ms = min(max(ttl.ttl_ms, floor_ms), cap_ms)
         else:
             bet_instruction, market_instruction = "", ""
             ttl_ms = ttl.ttl_ms
@@ -1279,6 +1280,7 @@ class SignalEngine:
         ]
         # Safety: filter any that somehow aren't actionable
         actionable = [s for s in actionable if s["actionable"] and s["remaining_ms"] > 0]
+        actionable.sort(key=lambda item: item.get("created_at_ms") or 0, reverse=True)
 
         return {
             "server_time_ms": now,

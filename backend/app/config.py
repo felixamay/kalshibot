@@ -86,7 +86,7 @@ class Settings(BaseSettings):
     # Signal TTL
     min_signal_ttl_seconds: float = 2.0
     default_signal_ttl_seconds: float = 8.0
-    max_signal_ttl_seconds: float = 15.0
+    max_signal_ttl_seconds: float = 30.0
     signal_timer_refresh_ms: int = 100
 
     # Market quality thresholds

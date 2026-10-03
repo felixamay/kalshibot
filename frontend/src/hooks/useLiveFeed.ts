@@ -35,6 +35,7 @@ export function useLiveFeed() {
   const clockRef = useRef(new ClockSynchronizer());
   const wsRef = useRef<WebSocket | null>(null);
   const boardSaveAt = useRef(0);
+  const lastMessageAt = useRef(Date.now());
   const [serverNow, setServerNow] = useState(() => Date.now());
 
   const rememberBoard = useCallback((payload: DashboardPayload, force = false) => {
@@ -86,10 +87,25 @@ export function useLiveFeed() {
         clockRef.current.lastSyncAt = recv;
         setServerNow(clockRef.current.serverNow());
       }
-      for (const s of payload.actionable_signals || []) upsertSignal(s);
+      const incoming = payload.actionable_signals || [];
+      const snapshotAt = payload.server_time_ms || 0;
+      setSignals((prev) => {
+        const next: Record<string, LiveSignal> = {};
+        for (const sig of incoming) {
+          const existing = prev[sig.signal_id];
+          next[sig.signal_id] =
+            existing && existing.signal_version > sig.signal_version ? existing : sig;
+        }
+        // A socket alert can arrive after this snapshot was built. Keep that one.
+        for (const sig of Object.values(prev)) {
+          if (next[sig.signal_id]) continue;
+          if (sig.actionable && sig.created_at_ms > snapshotAt) next[sig.signal_id] = sig;
+        }
+        return next;
+      });
       rememberBoard(payload);
     },
-    [rememberBoard, upsertSignal]
+    [rememberBoard]
   );
 
   useEffect(() => {
@@ -121,6 +137,7 @@ export function useLiveFeed() {
         try {
           const msg = JSON.parse(ev.data);
           const recv = Date.now();
+          lastMessageAt.current = recv;
           if (msg.type === "clock_sync" || msg.type === "pong") {
             const p = msg.payload;
             clockRef.current.recordSync(
@@ -204,7 +221,8 @@ export function useLiveFeed() {
   useEffect(() => {
     const id = setInterval(() => {
       const ws = wsRef.current;
-      if (ws && ws.readyState === WebSocket.OPEN) {
+      const quiet = Date.now() - lastMessageAt.current > 8000;
+      if (!quiet && ws && ws.readyState === WebSocket.OPEN) {
         ws.send(
           JSON.stringify({ type: "get_dashboard", client_send_ms: Date.now() })
         );
