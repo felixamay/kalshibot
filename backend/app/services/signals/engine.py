@@ -1238,7 +1238,13 @@ class SignalEngine:
     def dashboard_payload(self) -> dict[str, Any]:
         now = time.time() * 1000.0
         cards = []
-        for ticker, ctx in self.snap.matches.items():
+        live = [
+            (ticker, ctx)
+            for ticker, ctx in self.snap.matches.items()
+            if match_is_live(ctx, now)
+        ]
+        live_tickers = {ticker for ticker, _ in live}
+        for ticker, ctx in live:
             analyzer = self.snap.analyzers.get(ticker)
             market = analyzer.state if analyzer else None
             active = self._active_signal_for(ticker)
@@ -1297,17 +1303,18 @@ class SignalEngine:
         ]
         # Safety: filter any that somehow aren't actionable
         actionable = [s for s in actionable if s["actionable"] and s["remaining_ms"] > 0]
+        actionable = [s for s in actionable if s.get("market_ticker") in live_tickers]
         actionable.sort(key=lambda item: item.get("created_at_ms") or 0, reverse=True)
 
         return {
             "server_time_ms": now,
             "connection_status": self.snap.connection_status.value,
-            "live_match_count": len(self.snap.matches),
+            "live_match_count": len(cards),
             "matches": cards,
             "actionable_signals": actionable,
             "signal_history": self.snap.signal_history[-50:],
-            "no_live_markets": len(self.snap.matches) == 0,
-            "message": "NO LIVE TENNIS MARKETS" if len(self.snap.matches) == 0 else None,
+            "no_live_markets": len(cards) == 0,
+            "message": "NO LIVE TENNIS MARKETS" if len(cards) == 0 else None,
             "max_data_age_ms": self.settings.max_data_age_ms,
         }
 

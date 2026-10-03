@@ -135,6 +135,7 @@ export interface MatchCard {
   max_signals_per_match?: number;
   analysis_mode: string;
   display_state: string;
+  is_live?: boolean;
   observation_ends_ms?: number;
   observation_remaining_ms: number;
   observation_remaining_display: string;

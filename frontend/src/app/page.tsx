@@ -66,7 +66,9 @@ export default function HomePage() {
   const [analysisSignal, setAnalysisSignal] = useState<LiveSignal | null>(null);
 
   const rankedMatches = useMemo(() => {
-    const matches = dashboard?.matches ?? [];
+    const matches = (dashboard?.matches ?? []).filter(
+      (m) => m.is_live !== false && !/not live/i.test(m.hold_reason || "")
+    );
     const group: Record<string, number> = {
       STRONG_PATTERN_SIGNAL: 0,
       STRONG_ENTRY_SIGNAL: 0,
@@ -285,7 +287,7 @@ export default function HomePage() {
             match={featured}
             serverNow={serverNow}
             snapshotServerTimeMs={dashboard?.server_time_ms ?? serverNow}
-            marketCount={dashboard?.live_match_count ?? rankedMatches.length}
+            marketCount={rankedMatches.length}
           />
         </section>
       )}
@@ -303,14 +305,14 @@ export default function HomePage() {
         <div className="flex items-baseline justify-between gap-3 mb-4">
           <h2 className="font-display text-3xl">Live Matches</h2>
           <span className="font-mono text-xs text-mist/50">
-            {dashboard?.live_match_count ?? 0} markets
+            {rankedMatches.length} live
           </span>
         </div>
         {dashboard == null ? (
           <div className="border border-dashed border-white/15 p-8 text-center font-mono text-sm text-mist/60">
             Restoring the live board…
           </div>
-        ) : dashboard.no_live_markets || !dashboard.matches?.length ? (
+        ) : dashboard.no_live_markets || rankedMatches.length === 0 ? (
           <div className="border border-dashed border-white/15 p-8 text-center font-mono text-sm text-mist/60">
             NO LIVE TENNIS MARKETS
           </div>

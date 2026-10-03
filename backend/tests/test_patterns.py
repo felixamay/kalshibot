@@ -165,9 +165,31 @@ async def test_a_match_that_has_not_started_is_not_a_bet():
             imbalance=0.32,
             status="OPEN",
         )
+    engine.register_match(
+        match_id="m2",
+        player_a="Live A",
+        player_b="Live B",
+        tournament="Test",
+        market_ticker="KXLIVE",
+        market_db_id="mk2",
+        now_ms=now,
+        scheduled_start_ms=now - 60_000,
+    )
+    engine.register_match(
+        match_id="m3",
+        player_a="Old A",
+        player_b="Old B",
+        tournament="Test",
+        market_ticker="KXOLD",
+        market_db_id="mk3",
+        now_ms=now,
+        scheduled_start_ms=now - (7 * 60 * 60 * 1000),
+    )
     payload = engine.dashboard_payload()
     assert payload["actionable_signals"] == []
-    assert "not live" in payload["matches"][0]["hold_reason"].lower()
+    assert [m["market_ticker"] for m in payload["matches"]] == ["KXLIVE"]
+    assert payload["live_match_count"] == 1
+    assert payload["no_live_markets"] is False
 
 
 def test_a_pattern_about_to_begin_alerts_without_three_confirmations():

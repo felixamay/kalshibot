@@ -55,7 +55,14 @@ async def health(db: AsyncSession = Depends(get_db)) -> HealthResponse:
         db_status = "error"
     # Status only. Building every match card here made a refresh wait on the full board.
     connection = engine.snap.connection_status.value if engine else "DISCONNECTED"
-    live_matches = len(engine.snap.matches) if engine else 0
+    now_ms = time.time() * 1000.0
+    from app.services.signals.engine import match_is_live
+
+    live_matches = (
+        sum(1 for ctx in engine.snap.matches.values() if match_is_live(ctx, now_ms))
+        if engine
+        else 0
+    )
     return HealthResponse(
         status="ok" if db_status == "ok" else "degraded",
         server_time_ms=time.time() * 1000.0,
