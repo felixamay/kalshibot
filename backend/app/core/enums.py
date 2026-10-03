@@ -4,8 +4,11 @@ from enum import Enum
 
 
 class SignalType(str, Enum):
-    BET_NOW = "BET_NOW"
+    BET_NOW = "BET_NOW"  # legacy alias of BET_SIGNAL
+    BET_SIGNAL = "BET_SIGNAL"
     STRONG_BET_SIGNAL = "STRONG_BET_SIGNAL"
+    WATCH = "WATCH"
+    CLOSE_TO_SIGNAL = "CLOSE_TO_SIGNAL"
     WAIT = "WAIT"
     NO_BET = "NO_BET"
     EDGE_DISAPPEARING = "EDGE_DISAPPEARING"
@@ -103,6 +106,33 @@ class PositionStatus(str, Enum):
     OPEN = "OPEN"
     CLOSED = "CLOSED"
     COOLDOWN = "COOLDOWN"
+
+
+ACTIONABLE_SIGNAL_TYPES = {
+    SignalType.BET_NOW,
+    SignalType.BET_SIGNAL,
+    SignalType.STRONG_BET_SIGNAL,
+}
+
+SIGNAL_DISPLAY_LABELS = {
+    SignalType.BET_NOW: "BET SIGNAL",
+    SignalType.BET_SIGNAL: "BET SIGNAL",
+    SignalType.STRONG_BET_SIGNAL: "STRONG BET SIGNAL",
+    SignalType.WATCH: "WATCH",
+    SignalType.CLOSE_TO_SIGNAL: "CLOSE TO SIGNAL",
+    SignalType.NO_BET: "NO BET",
+    SignalType.OPPORTUNITY_MISSED: "OPPORTUNITY MISSED",
+    SignalType.DO_NOT_CHASE: "DO NOT CHASE",
+    SignalType.STUDYING_MATCH: "STUDYING MATCH",
+}
+
+
+def signal_display_label(signal_type: SignalType | str) -> str:
+    try:
+        key = signal_type if isinstance(signal_type, SignalType) else SignalType(signal_type)
+    except ValueError:
+        return str(signal_type).replace("_", " ")
+    return SIGNAL_DISPLAY_LABELS.get(key, key.value.replace("_", " "))
 
 
 class UrgencyStage(str, Enum):

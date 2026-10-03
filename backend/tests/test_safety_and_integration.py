@@ -32,11 +32,14 @@ def test_probability_model_net_edge_formula():
     result = model.estimate(player="A", market=market, direction="YES")
     assert 0 < result.model_win_probability < 1
     assert result.executable_market_probability == pytest.approx(0.62)
+    fees = (
+        settings.estimated_fee_rate
+        * result.executable_market_probability
+        * (1 - result.executable_market_probability)
+    )
+    assert result.estimated_fees == pytest.approx(fees)
     assert result.estimated_net_edge == pytest.approx(
-        result.raw_edge
-        - settings.estimated_fee_rate * max(result.raw_edge, 0)
-        - settings.expected_slippage
-        - settings.safety_margin
+        result.raw_edge - fees - settings.expected_slippage - settings.safety_margin
     )
 
 

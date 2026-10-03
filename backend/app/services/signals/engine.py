@@ -22,6 +22,14 @@ from app.core.enums import (
 from app.services.market.analyzer import MarketState, RollingMarketAnalyzer
 from app.services.signals.confidence import SignalConfidenceCalculator
 from app.services.signals.live_signal import LiveSignal
+from app.services.signals.mispricing import (
+    MarketRead,
+    assess_market,
+    dynamic_min_edge,
+    liquidity_quality,
+    model_uncertainty,
+    spread_quality,
+)
 from app.services.signals.ttl import SignalTTLCalculator
 from app.services.tennis.probability import ProbabilityResult, TennisProbabilityModel
 from app.services.tennis.provider import TennisLiveState
@@ -61,6 +69,7 @@ class MatchContext:
     tennis: Optional[TennisLiveState] = None
     last_model: Optional[ProbabilityResult] = None
     last_confidence: Optional[float] = None
+    last_read: Optional[MarketRead] = None
     hold_reason: str = "Waiting for the first Kalshi quote."
     chase_blocked_until_ms: float = 0.0
     best_seen_ask: Optional[float] = None  # for anti-chase
@@ -207,7 +216,22 @@ class SignalEngine:
             ctx.analysis_mode = AnalysisMode.OBSERVING.value
             ctx.display_state = SignalType.STUDYING_MATCH
             ctx.confirmation_count = 0
-            ctx.hold_reason = self._hold_reason(ctx, market, now, observing=True)
+            if ctx.last_model is not None and ctx.last_confidence is not None:
+                preview = assess_market(
+                    self.settings,
+                    market,
+                    ctx.last_model,
+                    confidence=ctx.last_confidence,
+                    confirmation_count=0,
+                    tennis_available=bool(ctx.tennis and ctx.tennis.available)
+                    or ctx.last_model.source == "tennis_enhanced",
+                )
+                ctx.last_read = preview
+                ctx.hold_reason = (
+                    "No BET SIGNAL until the observation clock ends. " + preview.explanation
+                )
+            else:
+                ctx.hold_reason = "No BET SIGNAL until the observation clock ends."
             return
 
         if market.data_age_ms > self.settings.max_data_age_ms:
@@ -241,99 +265,125 @@ class SignalEngine:
         )
 
         # Evaluate YES on player_a (primary market convention)
-        prob = ctx.last_model or self._score_market(ctx, market)
+        if ctx.last_model is None:
+            self._score_market(ctx, market)
+        prob = ctx.last_model
+        if prob is None or ctx.last_confidence is None:
+            ctx.display_state = SignalType.NO_BET
+            ctx.hold_reason = "Waiting for a usable Kalshi quote."
+            return
 
-        # Anti-chase: track best ask when edge first appeared
+        read = self._read_market(ctx, market, prob, ctx.last_confidence)
         ask = market.executable_yes_price()
-        if ctx.best_seen_ask is None or ask < ctx.best_seen_ask:
-            if prob.estimated_net_edge >= self.settings.min_net_edge:
-                ctx.best_seen_ask = ask
+        if (
+            read.dynamic_min_edge is not None
+            and read.uncertainty_adjusted_edge >= read.dynamic_min_edge
+            and (ctx.best_seen_ask is None or ask < ctx.best_seen_ask)
+        ):
+            ctx.best_seen_ask = ask
+        ctx.hold_reason = read.explanation
 
-        conf = self.conf_calc.calculate(
-            market,
-            prob,
-            confirmation_count=ctx.confirmation_count,
-        )
-        ctx.last_confidence = conf.confidence
-
-        # Volatility gate
-        w5 = market.windows.get(5000)
-        if w5 and w5.volatility > 3.5:
+        if read.decision == "MATCH_TOO_VOLATILE":
             ctx.display_state = SignalType.MATCH_TOO_VOLATILE
             ctx.confirmation_count = 0
-            ctx.hold_reason = (
-                f"5-second volatility is {w5.volatility:.1f}. "
-                "The book is too jumpy to enter."
+            return
+        if read.decision in ("OPPORTUNITY_MISSED", "DO_NOT_CHASE"):
+            ctx.display_state = (
+                SignalType.OPPORTUNITY_MISSED
+                if read.decision == "OPPORTUNITY_MISSED"
+                else SignalType.DO_NOT_CHASE
+            )
+            ctx.confirmation_count = 0
+            return
+        if read.decision in ("BET_SIGNAL", "STRONG_BET_SIGNAL"):
+            active = self._active_signal_for(ticker)
+            if active and active.is_actionable(now):
+                return
+            await self._emit_bet_signal(
+                ctx=ctx,
+                market=market,
+                prob=prob,
+                confidence=ctx.last_confidence,
+                strong=read.decision == "STRONG_BET_SIGNAL",
+                now_ms=now,
+                read=read,
             )
             return
+        if read.decision == "CLOSE_TO_SIGNAL":
+            ctx.display_state = SignalType.CLOSE_TO_SIGNAL
+            return
+        if read.decision == "WATCH":
+            ctx.display_state = SignalType.WATCH
+            ctx.confirmation_count = max(0, ctx.confirmation_count)
+            return
 
-        # Check conditions for confirmation accumulation
-        conditions_ok = self._entry_conditions_ok(market, prob, conf.confidence)
-        if conditions_ok:
-            ctx.confirmation_count += 1
-            if ctx.confirmation_count < self.settings.entry_confirmation_count:
-                ctx.display_state = SignalType.CONDITIONS_IMPROVING
-                ctx.hold_reason = (
-                    f"Gates are open. Confirmation {ctx.confirmation_count}/"
-                    f"{self.settings.entry_confirmation_count}. "
-                    "A single spike is not a BET NOW."
-                )
-                return
+        ctx.confirmation_count = max(0, ctx.confirmation_count - 1)
+        if read.uncertainty_adjusted_edge < -0.02:
+            ctx.display_state = SignalType.NO_BET
+        elif read.uncertainty_adjusted_edge > 0:
+            ctx.display_state = SignalType.WAIT
         else:
-            if ctx.confirmation_count > 0:
-                ctx.display_state = SignalType.WAIT
-            else:
-                if prob.estimated_net_edge > 0.01:
-                    ctx.display_state = SignalType.WAIT
-                elif prob.estimated_net_edge < -0.02:
-                    ctx.display_state = SignalType.NO_BET
-                else:
-                    ctx.display_state = SignalType.KEEP_WATCHING
-            ctx.confirmation_count = max(0, ctx.confirmation_count - 1)
-            ctx.hold_reason = self._hold_reason(ctx, market, now, observing=False)
-            return
-
-        # Anti-chase: if ask moved far above best_seen when model first liked it
-        if ctx.best_seen_ask is not None:
-            max_chase = ctx.best_seen_ask + self.settings.max_entry_slippage_cents + 1
-            if ask > max_chase and prob.estimated_net_edge < self.settings.min_net_edge + 0.02:
-                ctx.display_state = SignalType.OPPORTUNITY_MISSED
-                ctx.confirmation_count = 0
-                ctx.hold_reason = (
-                    f"Ask ran from {ctx.best_seen_ask:.0f}¢ to {ask:.0f}¢. Do not chase."
-                )
-                return
-
-        # Already have active actionable signal for this market?
-        active = self._active_signal_for(ticker)
-        if active and active.is_actionable(now):
-            return
-
-        # Emit signal
-        is_strong = (
-            conf.confidence >= self.settings.strong_bet_confidence
-            and prob.estimated_net_edge >= self.settings.min_net_edge + 0.02
-            and market.spread <= 3
-            and (market.depth_yes + market.depth_no) >= self.settings.min_liquidity_contracts * 1.5
-        )
-        await self._emit_bet_signal(
-            ctx=ctx,
-            market=market,
-            prob=prob,
-            confidence=conf.confidence,
-            strong=is_strong,
-            now_ms=now,
-        )
+            ctx.display_state = SignalType.NO_BET
 
     def _score_market(self, ctx: MatchContext, market: MarketState) -> ProbabilityResult:
         player = market_yes_player(ctx, market)
         prob = self.prob_model.estimate(
             player=player, market=market, tennis=ctx.tennis, direction="YES"
         )
+        tennis_ok = bool(ctx.tennis and ctx.tennis.available) or prob.source == "tennis_enhanced"
+        preview = assess_market(
+            self.settings,
+            market,
+            prob,
+            confidence=0,
+            confirmation_count=ctx.confirmation_count,
+            tennis_available=tennis_ok,
+            best_seen_ask=ctx.best_seen_ask,
+        )
+        prob.model_uncertainty = preview.model_uncertainty
+        prob.uncertainty_adjusted_edge = preview.uncertainty_adjusted_edge
         conf = self.conf_calc.calculate(market, prob, confirmation_count=ctx.confirmation_count)
         ctx.last_model = prob
         ctx.last_confidence = conf.confidence
         return prob
+
+    def _read_market(
+        self,
+        ctx: MatchContext,
+        market: MarketState,
+        prob: ProbabilityResult,
+        confidence: float,
+    ) -> MarketRead:
+        tennis_ok = bool(ctx.tennis and ctx.tennis.available) or prob.source == "tennis_enhanced"
+        # Count a passing update toward confirmation before classifying.
+        prospective = ctx.confirmation_count
+        read_now = assess_market(
+            self.settings,
+            market,
+            prob,
+            confidence=confidence,
+            confirmation_count=prospective,
+            tennis_available=tennis_ok,
+            best_seen_ask=ctx.best_seen_ask,
+        )
+        if read_now.decision in ("BET_SIGNAL", "STRONG_BET_SIGNAL", "CLOSE_TO_SIGNAL", "WATCH") and (
+            read_now.dynamic_min_edge is not None
+            and read_now.uncertainty_adjusted_edge >= read_now.dynamic_min_edge
+            and confidence >= self.settings.min_bet_confidence
+        ):
+            prospective = ctx.confirmation_count + 1
+            ctx.confirmation_count = prospective
+        read = assess_market(
+            self.settings,
+            market,
+            prob,
+            confidence=confidence,
+            confirmation_count=ctx.confirmation_count,
+            tennis_available=tennis_ok,
+            best_seen_ask=ctx.best_seen_ask,
+        )
+        ctx.last_read = read
+        return read
 
     def _hold_reason(
         self,
@@ -460,14 +510,38 @@ class SignalEngine:
             ctx.confirmation_count = 0
             return
 
-        # Recompute edge/confidence
+        # Recompute edge against the current book's dynamic threshold.
         player = sig.player
         prob = self.prob_model.estimate(
             player=player, market=market, tennis=ctx.tennis, direction=sig.direction
         )
+        tennis_ok = bool(ctx.tennis and ctx.tennis.available) or prob.source == "tennis_enhanced"
+        uncertainty, penalty = model_uncertainty(tennis_ok, prob.source, self.settings)
+        adjusted_preview = prob.estimated_net_edge - penalty
+        prob.model_uncertainty = uncertainty
+        prob.uncertainty_adjusted_edge = adjusted_preview
         conf = self.conf_calc.calculate(market, prob, confirmation_count=self.settings.entry_confirmation_count)
-
-        if prob.estimated_net_edge < self.settings.min_net_edge:
+        liquidity = liquidity_quality(market, self.settings)
+        spread = spread_quality(market, self.settings)
+        w5 = market.windows.get(5000)
+        vol = (w5.volatility if w5 else 0.0) or 0.0
+        extreme = vol > self.settings.extreme_volatility
+        required = dynamic_min_edge(
+            liquidity, spread, extreme_volatility=extreme, settings=self.settings
+        )
+        if extreme or required is None:
+            reason = (
+                ExpirationReason.LIQUIDITY_LOSS
+                if liquidity == "VERY_LOW"
+                else ExpirationReason.SPREAD_EXPANSION
+                if spread == "VERY_POOR"
+                else ExpirationReason.RISK_LIMIT
+            )
+            sig.cancel(reason, price=current, server_now_ms=now)
+            await self._emit_signal_update(sig)
+            ctx.display_state = SignalType.MATCH_TOO_VOLATILE if extreme else SignalType.NO_BET
+            return
+        if adjusted_preview < required:
             sig.cancel(
                 ExpirationReason.EDGE_DISAPPEARED,
                 price=current,
@@ -511,7 +585,7 @@ class SignalEngine:
 
         # Soft update of live fields
         sig.market_price = current
-        sig.net_edge = prob.estimated_net_edge
+        sig.net_edge = adjusted_preview
         sig.confidence = conf.confidence
         sig.model_probability = prob.model_win_probability
         sig.lifecycle.append(
@@ -533,6 +607,7 @@ class SignalEngine:
         confidence: float,
         strong: bool,
         now_ms: float,
+        read: MarketRead | None = None,
     ) -> None:
         # Supersede previous
         prev = self._active_signal_for(ctx.market_ticker)
@@ -546,7 +621,10 @@ class SignalEngine:
         signal_id = f"SIG-{_slug(prob.player)}-{_slug(ctx.tournament or 'TEN')}-{self._seq % 100000:05d}"
 
         ask = market.executable_yes_price() if prob.direction == "YES" else market.executable_no_price()
-        max_entry = ask + self.settings.max_entry_slippage_cents
+        model_cap = read.max_entry_price_cents if read else ask + self.settings.max_entry_slippage_cents
+        max_entry = min(model_cap, ask + self.settings.max_entry_slippage_cents)
+        # The model cap is the economic maximum. Do not allow a looser ask+slippage cap above it.
+        max_entry = model_cap
 
         sig = LiveSignal(
             signal_id=signal_id,
@@ -554,7 +632,7 @@ class SignalEngine:
             match_id=ctx.match_id,
             market_id=ctx.market_db_id,
             market_ticker=ctx.market_ticker,
-            signal_type=SignalType.STRONG_BET_SIGNAL if strong else SignalType.BET_NOW,
+            signal_type=SignalType.STRONG_BET_SIGNAL if strong else SignalType.BET_SIGNAL,
             player=prob.player,
             direction=prob.direction,
             created_at_ms=now_ms,
@@ -564,7 +642,7 @@ class SignalEngine:
             target_entry_price=ask,
             maximum_entry_price=max_entry,
             model_probability=prob.model_win_probability,
-            net_edge=prob.estimated_net_edge,
+            net_edge=read.uncertainty_adjusted_edge if read else prob.estimated_net_edge,
             confidence=confidence,
             creation_price=ask,
             tournament=ctx.tournament,
@@ -661,6 +739,9 @@ class SignalEngine:
                     "raw_edge": ctx.last_model.raw_edge if ctx.last_model else None,
                     "confidence": ctx.last_confidence,
                     "hold_reason": ctx.hold_reason,
+                    "read": ctx.last_read.as_dict() if ctx.last_read else None,
+                    "signals_today": ctx.signals_emitted,
+                    "max_signals_per_match": self.settings.max_signals_per_match,
                     "analysis_mode": ctx.analysis_mode,
                     "display_state": ctx.display_state.value,
                     "observation_ends_ms": ctx.observation_ends_ms,

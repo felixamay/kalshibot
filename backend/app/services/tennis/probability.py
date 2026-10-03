@@ -19,6 +19,9 @@ class ProbabilityResult:
     raw_edge: float
     estimated_net_edge: float
     source: str  # market_implied_adjusted | tennis_enhanced
+    estimated_fees: float = 0.0
+    uncertainty_adjusted_edge: float | None = None
+    model_uncertainty: str = "MEDIUM"
 
 
 class TennisProbabilityModel:
@@ -75,9 +78,11 @@ class TennisProbabilityModel:
 
         model_prob = max(0.02, min(0.98, model_prob))
         raw_edge = model_prob - exec_prob
+        # Fee scales with how contested the contract is, not with the size of our edge.
+        fees = self.settings.estimated_fee_rate * exec_prob * (1.0 - exec_prob)
         net_edge = (
             raw_edge
-            - self.settings.estimated_fee_rate * max(raw_edge, 0)  # fee approx on expected profit
+            - fees
             - self.settings.expected_slippage
             - self.settings.safety_margin
         )
@@ -90,6 +95,7 @@ class TennisProbabilityModel:
             raw_edge=raw_edge,
             estimated_net_edge=net_edge,
             source=source,
+            estimated_fees=fees,
         )
 
     def _tennis_adjustment(self, tennis: TennisLiveState, player: str) -> float:

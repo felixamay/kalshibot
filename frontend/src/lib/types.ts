@@ -38,6 +38,28 @@ export interface LiveSignal {
   lifecycle?: Array<Record<string, unknown>>;
 }
 
+export interface MarketRead {
+  raw_edge?: number;
+  estimated_fees?: number;
+  net_edge?: number;
+  model_uncertainty?: string;
+  uncertainty_penalty?: number;
+  uncertainty_adjusted_edge?: number;
+  liquidity_quality?: string;
+  spread_quality?: string;
+  market_quality_score?: number;
+  dynamic_min_edge?: number | null;
+  mispricing_score?: number;
+  opportunity_score?: number;
+  max_entry_price_cents?: number;
+  confirmation_needed?: number;
+  decision?: string;
+  reasons?: string[];
+  blockers?: string[];
+  explanation?: string;
+  close_to_signal?: boolean;
+}
+
 export interface MatchCard {
   match_id: string;
   player_a: string;
@@ -57,6 +79,9 @@ export interface MatchCard {
   raw_edge?: number | null;
   confidence?: number | null;
   hold_reason?: string | null;
+  read?: MarketRead | null;
+  signals_today?: number;
+  max_signals_per_match?: number;
   analysis_mode: string;
   display_state: string;
   observation_ends_ms?: number;

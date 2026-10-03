@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 
-HORIZONS = (1, 5, 10, 30, 60)
+HORIZONS = (1, 5, 10, 15, 30, 60)
 
 
 @dataclass

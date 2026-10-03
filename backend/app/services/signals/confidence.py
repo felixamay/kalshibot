@@ -37,15 +37,21 @@ class SignalConfidenceCalculator:
         s = self.settings
         req = required_confirmations or s.entry_confirmation_count
 
-        # Model/pricing edge (0-100)
-        edge = prob.estimated_net_edge
-        model_c = max(0.0, min(100.0, (edge / 0.10) * 100.0))  # 10% net edge => 100
+        # Model/mispricing edge (0-100). Prefer uncertainty-adjusted edge.
+        edge = (
+            prob.uncertainty_adjusted_edge
+            if prob.uncertainty_adjusted_edge is not None
+            else prob.estimated_net_edge
+        )
+        model_c = max(0.0, min(100.0, (edge / 0.045) * 100.0))  # 4.5pp adjusted edge => 100
+        if getattr(prob, "model_uncertainty", "MEDIUM") == "HIGH":
+            model_c *= max(0.0, 1.0 - s.uncertainty_confidence_haircut)
 
         # Order book: imbalance aligned with direction
         imb = market.imbalance
         if prob.direction == "NO":
             imb = -imb
-        orderbook_c = max(0.0, min(100.0, 50 + imb * 50))
+        orderbook_c = max(0.0, min(100.0, 65 + imb * 40))
 
         # Momentum over 5s / 10s
         w5 = market.windows.get(5000)
@@ -53,7 +59,7 @@ class SignalConfidenceCalculator:
         mom = (w5.momentum if w5 else 0.0) or 0.0
         if prob.direction == "NO":
             mom = -mom
-        momentum_c = max(0.0, min(100.0, 50 + mom * 10))
+        momentum_c = max(0.0, min(100.0, 65 + mom * 8))
 
         # Trade flow / velocity (moderate is good; extreme is risky)
         vel = (w5.trade_velocity if w5 else 0.0) or 0.0
@@ -84,9 +90,9 @@ class SignalConfidenceCalculator:
         if mom * mom10 > 0:
             trend_c = 80.0
         elif mom == 0 and mom10 == 0:
-            trend_c = 50.0
+            trend_c = 65.0
         else:
-            trend_c = 25.0
+            trend_c = 30.0
 
         # Volatility / reversal risk (lower vol = higher score)
         vol = (w5.volatility if w5 else 0.0) or 0.0

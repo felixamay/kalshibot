@@ -72,11 +72,13 @@ export function LiveReadCard({
           }
         />
         <ReadStat
-          label="Net edge"
+          label="Adjusted edge"
           value={
-            match.estimated_edge != null
-              ? `${match.estimated_edge >= 0 ? "+" : ""}${(match.estimated_edge * 100).toFixed(1)}pp`
-              : "—"
+            match.read?.uncertainty_adjusted_edge != null
+              ? `${match.read.uncertainty_adjusted_edge >= 0 ? "+" : ""}${(match.read.uncertainty_adjusted_edge * 100).toFixed(1)}pp`
+              : match.estimated_edge != null
+                ? `${match.estimated_edge >= 0 ? "+" : ""}${(match.estimated_edge * 100).toFixed(1)}pp`
+                : "—"
           }
         />
         <ReadStat
@@ -93,12 +95,51 @@ export function LiveReadCard({
         />
       </div>
 
-      <p className="mt-6 max-w-3xl text-base leading-relaxed text-mist/80">
-        {match.hold_reason || "Scoring this market against the bet gates."}
+      {match.read?.close_to_signal && (
+        <p className="mt-5 font-mono text-sm uppercase tracking-wider text-signal-amber">
+          Close to signal · confidence {Math.round(match.confidence ?? 0)} / 80 ·
+          edge{" "}
+          {match.read.uncertainty_adjusted_edge != null
+            ? `${(match.read.uncertainty_adjusted_edge * 100).toFixed(1)}%`
+            : "—"}{" "}
+          / required{" "}
+          {match.read.dynamic_min_edge != null
+            ? `${(match.read.dynamic_min_edge * 100).toFixed(1)}%`
+            : "—"}{" "}
+          · confirmation {match.read.confirmation_needed ?? 3} needed
+        </p>
+      )}
+
+      <div className="mt-5 flex flex-wrap gap-3 font-mono text-[11px] uppercase tracking-wider text-mist/60">
+        <span>Liquidity {match.read?.liquidity_quality || "—"}</span>
+        <span>Spread {match.read?.spread_quality || "—"}</span>
+        <span>
+          Market quality{" "}
+          {match.read?.market_quality_score != null
+            ? Math.round(match.read.market_quality_score)
+            : "—"}
+        </span>
+        <span>Uncertainty {match.read?.model_uncertainty || "—"}</span>
+        <span>
+          Signals {match.signals_today ?? match.signals_emitted ?? 0} /{" "}
+          {match.max_signals_per_match ?? 4}
+        </span>
+      </div>
+
+      <p className="mt-4 max-w-3xl text-base leading-relaxed text-mist/80">
+        {match.hold_reason || match.read?.explanation || "Scoring this market against the bet gates."}
       </p>
+      {match.read?.reasons && match.read.reasons.length > 0 && (
+        <ul className="mt-3 space-y-1 text-sm text-mist/70">
+          {match.read.reasons.slice(0, 4).map((reason) => (
+            <li key={reason}>+ {reason}</li>
+          ))}
+        </ul>
+      )}
       <p className="mt-3 font-mono text-[11px] uppercase tracking-wider text-mist/40">
-        BET NOW only if confidence is at least 85, net edge is at least 4pp, and
-        the book stays tradable for 5 updates in a row.
+        A bet signal needs confidence of at least 80, a dynamic net edge, and 3
+        confirming updates. 90 is signal confidence, not a 90% win probability.
+        WATCH is not an instruction to bet.
       </p>
     </section>
   );

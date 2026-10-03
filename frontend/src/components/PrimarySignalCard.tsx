@@ -102,6 +102,9 @@ export function PrimarySignalCard({
           <span className="text-signal-mint text-lg">
             {Math.round(signal.confidence)} / 100
           </span>
+          <p className="text-[10px] uppercase tracking-wider text-mist/40">
+            Signal confidence, not win probability
+          </p>
         </div>
         <div>
           <span className="text-mist/50">Generated </span>

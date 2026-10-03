@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 import { ConnectionBadge } from "@/components/ConnectionBadge";
 import { ManualBetModal } from "@/components/ManualBetModal";
 import { LiveReadCard } from "@/components/LiveReadCard";
+import { StrategySettings } from "@/components/StrategySettings";
 import { MatchCard } from "@/components/MatchCard";
 import { PrimarySignalCard } from "@/components/PrimarySignalCard";
 import { useLiveFeed } from "@/hooks/useLiveFeed";
@@ -24,15 +25,18 @@ export default function HomePage() {
 
   const rankedMatches = useMemo(() => {
     const matches = dashboard?.matches ?? [];
-    const score = (m: (typeof matches)[number]) => {
-      const price = m.kalshi_probability ?? 0;
-      const tradable = price >= 0.08 && price <= 0.92 ? 1 : 0;
-      const liquidity = Math.min(m.liquidity ?? 0, 5000) / 5000;
-      const confidence = (m.confidence ?? 0) / 100;
-      const edge = m.estimated_edge ?? -1;
-      return tradable * 10 + liquidity * 3 + confidence * 2 + edge;
+    const group: Record<string, number> = {
+      STRONG_BET_SIGNAL: 0,
+      BET_SIGNAL: 1,
+      BET_NOW: 1,
+      CLOSE_TO_SIGNAL: 2,
+      WATCH: 3,
+      STUDYING_MATCH: 4,
+      NO_BET: 6,
     };
-    return [...matches].sort((a, b) => score(b) - score(a));
+    const rank = (m: (typeof matches)[number]) =>
+      (group[m.display_state] ?? 5) * 1000 - (m.read?.opportunity_score ?? 0);
+    return [...matches].sort((a, b) => rank(a) - rank(b));
   }, [dashboard]);
 
   const featured = rankedMatches.find((m) => m.model_probability != null) ?? null;
@@ -46,8 +50,10 @@ export default function HomePage() {
           s.status === "ACTIVE" &&
           rem > 0 &&
           (s.raw_signal_type === "BET_NOW" ||
+            s.raw_signal_type === "BET_SIGNAL" ||
             s.raw_signal_type === "STRONG_BET_SIGNAL" ||
             s.signal_type === "BET_NOW" ||
+            s.signal_type === "BET_SIGNAL" ||
             s.signal_type === "STRONG_BET_SIGNAL")
         );
       })
@@ -232,6 +238,8 @@ export default function HomePage() {
           </table>
         </div>
       </section>
+
+      <StrategySettings apiUrl={apiUrl} token={token} />
 
       <footer className="mt-12 border-t border-white/10 pt-6 font-mono text-[11px] text-mist/40 uppercase tracking-wider space-y-1">
         <p>CourtEdge never places, modifies, or cancels Kalshi orders.</p>

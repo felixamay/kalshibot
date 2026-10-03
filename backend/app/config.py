@@ -45,12 +45,19 @@ class Settings(BaseSettings):
     tennis_poll_interval_seconds: float = 5.0
 
     # Observation & signal strategy
+    # Confidence is signal confidence, not the player's win probability.
     initial_observation_seconds: int = 300
-    min_bet_confidence: float = 85.0
-    strong_bet_confidence: float = 92.0
-    min_net_edge: float = 0.04
-    entry_confirmation_count: int = 5
-    max_signals_per_match: int = 3
+    watch_confidence: float = 72.0
+    min_bet_confidence: float = 80.0
+    strong_bet_confidence: float = 90.0
+    # Base / "normal" minimum net edge. DynamicEdgeThreshold moves this.
+    min_net_edge: float = 0.02
+    excellent_market_min_edge: float = 0.015
+    medium_market_min_edge: float = 0.03
+    poor_market_min_edge: float = 0.04
+    strong_net_edge: float = 0.045
+    entry_confirmation_count: int = 3
+    max_signals_per_match: int = 4
     reentry_cooldown_seconds: int = 60
 
     # Signal TTL
@@ -62,21 +69,36 @@ class Settings(BaseSettings):
     # Market quality thresholds
     max_data_age_ms: int = 5000
     max_spread_cents: float = 6.0
-    min_liquidity_contracts: int = 50
+    spread_excellent_cents: float = 1.0
+    spread_good_cents: float = 2.0
+    spread_acceptable_cents: float = 3.0
+    # Absolute depth bands. LiquidityQuality also compares depth to recent activity.
+    liquidity_high_contracts: float = 2000.0
+    liquidity_good_contracts: float = 400.0
+    liquidity_medium_contracts: float = 80.0
+    liquidity_low_contracts: float = 20.0
+    min_liquidity_contracts: int = 20
     max_entry_slippage_cents: float = 2.0
-    estimated_fee_rate: float = 0.07  # Kalshi fee approx on profit
-    safety_margin: float = 0.015
-    expected_slippage: float = 0.01
+    # Kalshi-like fee: rate * p * (1-p). Plus slippage and safety margin.
+    estimated_fee_rate: float = 0.07
+    safety_margin: float = 0.005
+    expected_slippage: float = 0.003
+    extreme_volatility: float = 3.5
+    # Subtracted from net edge when the model itself is weakly informed.
+    uncertainty_penalty_low: float = 0.0
+    uncertainty_penalty_medium: float = 0.005
+    uncertainty_penalty_high: float = 0.01
+    uncertainty_confidence_haircut: float = 0.10
 
-    # Confidence weights (must sum ~1.0)
-    weight_model_edge: float = 0.30
+    # Confidence weights (must sum ~1.0). Not claimed to be optimal.
+    weight_model_edge: float = 0.35
     weight_orderbook: float = 0.20
     weight_momentum: float = 0.15
     weight_trade_flow: float = 0.10
-    weight_liquidity: float = 0.10
+    weight_liquidity: float = 0.08
     weight_spread: float = 0.05
-    weight_trend: float = 0.05
-    weight_volatility_risk: float = 0.05
+    weight_trend: float = 0.04
+    weight_volatility_risk: float = 0.03
 
     # Rolling windows (ms)
     window_sizes_ms: str = "250,500,1000,2000,5000,10000,30000,60000,180000,300000"

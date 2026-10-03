@@ -156,14 +156,18 @@ async def get_signal(signal_id: str) -> dict[str, Any]:
     return sig.to_public_dict()
 
 
-@router.get("/config")
-async def public_config() -> dict[str, Any]:
+def _strategy_config() -> dict[str, Any]:
     s = get_settings()
     return {
         "initial_observation_seconds": s.initial_observation_seconds,
+        "watch_confidence": s.watch_confidence,
         "min_bet_confidence": s.min_bet_confidence,
         "strong_bet_confidence": s.strong_bet_confidence,
         "min_net_edge": s.min_net_edge,
+        "excellent_market_min_edge": s.excellent_market_min_edge,
+        "medium_market_min_edge": s.medium_market_min_edge,
+        "poor_market_min_edge": s.poor_market_min_edge,
+        "strong_net_edge": s.strong_net_edge,
         "entry_confirmation_count": s.entry_confirmation_count,
         "max_signals_per_match": s.max_signals_per_match,
         "reentry_cooldown_seconds": s.reentry_cooldown_seconds,
@@ -172,9 +176,46 @@ async def public_config() -> dict[str, Any]:
         "max_signal_ttl_seconds": s.max_signal_ttl_seconds,
         "signal_timer_refresh_ms": s.signal_timer_refresh_ms,
         "max_data_age_ms": s.max_data_age_ms,
+        "spread_excellent_cents": s.spread_excellent_cents,
+        "spread_good_cents": s.spread_good_cents,
+        "spread_acceptable_cents": s.spread_acceptable_cents,
+        "uncertainty_penalty_high": s.uncertainty_penalty_high,
         "order_placement_enabled": False,
         "read_only_kalshi": True,
     }
+
+
+@router.get("/config")
+async def public_config() -> dict[str, Any]:
+    return _strategy_config()
+
+
+@router.patch("/config/strategy")
+async def update_strategy(
+    body: dict[str, Any],
+    user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Update in-memory strategy thresholds. Never enables order placement."""
+    allowed = {
+        "watch_confidence",
+        "min_bet_confidence",
+        "strong_bet_confidence",
+        "min_net_edge",
+        "excellent_market_min_edge",
+        "medium_market_min_edge",
+        "poor_market_min_edge",
+        "strong_net_edge",
+        "entry_confirmation_count",
+        "max_signals_per_match",
+        "default_signal_ttl_seconds",
+    }
+    s = get_settings()
+    for key, value in body.items():
+        if key not in allowed:
+            continue
+        current = getattr(s, key)
+        setattr(s, key, type(current)(value))
+    return _strategy_config()
 
 
 @router.post("/positions/enter")
@@ -333,3 +374,77 @@ async def backtest_ttl() -> dict[str, Any]:
     from app.services.analytics.backtest_ttl import run_ttl_backtest
 
     return run_ttl_backtest()
+
+
+def _horizon_price(item: dict[str, Any], seconds: int) -> float | None:
+    results = item.get("results")
+    if not isinstance(results, dict):
+        return None
+    row = results.get(seconds) or results.get(str(seconds)) or {}
+    if not isinstance(row, dict):
+        return None
+    return row.get("future_price")
+
+
+def _horizon_field(item: dict[str, Any], field: str) -> float | None:
+    results = item.get("results")
+    if not isinstance(results, dict):
+        return None
+    for key in (15, "15", 5, "5", 30, "30"):
+        row = results.get(key)
+        if isinstance(row, dict) and row.get(field) is not None:
+            return row.get(field)
+    return None
+
+
+@router.get("/backtest/strategies")
+async def backtest_strategies() -> dict[str, Any]:
+    """Compare the old fixed gate with the dynamic mispricing gate. Does not pick a winner."""
+    from app.services.signals.mispricing import compare_strategy_profiles
+
+    illustrative = [
+        {
+            "name": "42c contract with a real edge",
+            "confidence": 83,
+            "adjusted_edge": 0.05,
+            "dynamic_min_edge": 0.02,
+            "liquidity_quality": "GOOD",
+            "spread_quality": "GOOD",
+            "market_quality": "GOOD",
+            "max_adverse_movement": -1.0,
+        },
+        {
+            "name": "75c favorite with a tiny edge",
+            "confidence": 88,
+            "adjusted_edge": 0.01,
+            "dynamic_min_edge": 0.02,
+            "liquidity_quality": "HIGH",
+            "spread_quality": "EXCELLENT",
+            "market_quality": "HIGH",
+            "max_adverse_movement": -0.5,
+        },
+    ]
+    recorded = []
+    engine = get_engine()
+    if engine:
+        for item in engine.snap.signal_history[-200:]:
+            recorded.append(
+                {
+                    "name": item.get("signal_id"),
+                    "confidence": item.get("confidence") or 0,
+                    "adjusted_edge": item.get("net_edge") or 0,
+                    "dynamic_min_edge": 0.02,
+                    "liquidity_quality": "MEDIUM",
+                    "spread_quality": "GOOD",
+                    "price_after_5s": _horizon_price(item, 5),
+                    "price_after_15s": _horizon_price(item, 15),
+                    "price_after_30s": _horizon_price(item, 30),
+                    "max_favorable_movement": _horizon_field(item, "max_favorable_movement"),
+                    "max_adverse_movement": _horizon_field(item, "max_adverse_movement"),
+                }
+            )
+    return {
+        "illustrative": compare_strategy_profiles(illustrative),
+        "recorded": compare_strategy_profiles(recorded) if recorded else None,
+        "auto_select_enabled": False,
+    }

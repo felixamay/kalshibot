@@ -113,8 +113,22 @@ export function MatchCard({
         <span className="text-mist/70">{match.display_state.replace(/_/g, " ")}</span>
       </div>
 
+      <div className="mt-3 flex flex-wrap gap-2 font-mono text-[10px] uppercase tracking-wider text-mist/50">
+        <span>{match.read?.liquidity_quality || "Liquidity —"}</span>
+        <span>·</span>
+        <span>{match.read?.spread_quality || "Spread —"}</span>
+        <span>·</span>
+        <span>
+          Signals {match.signals_today ?? match.signals_emitted ?? 0}/
+          {match.max_signals_per_match ?? 4}
+        </span>
+        {match.read?.close_to_signal && (
+          <span className="text-signal-amber">· Close to signal</span>
+        )}
+      </div>
+
       {match.hold_reason && (
-        <p className="mt-4 text-sm leading-relaxed text-mist/75">{match.hold_reason}</p>
+        <p className="mt-3 text-sm leading-relaxed text-mist/75">{match.hold_reason}</p>
       )}
 
       {studying && (

@@ -8,10 +8,12 @@ from typing import Any, Optional
 
 from app.core.clock import remaining_ms, urgency_stage
 from app.core.enums import (
+    ACTIONABLE_SIGNAL_TYPES,
     EXPIRATION_REASON_MESSAGES,
     ExpirationReason,
     SignalStatus,
     SignalType,
+    signal_display_label,
 )
 
 
@@ -61,7 +63,7 @@ class LiveSignal:
             return False
         if now >= self.expires_at_ms:
             return False
-        if self.signal_type not in (SignalType.BET_NOW, SignalType.STRONG_BET_SIGNAL):
+        if self.signal_type not in ACTIONABLE_SIGNAL_TYPES:
             return False
         return True
 
@@ -113,7 +115,7 @@ class LiveSignal:
         rem = self.remaining_ms(now)
         actionable = self.is_actionable(now)
         display_type = self.signal_type.value
-        if not actionable and self.signal_type in (SignalType.BET_NOW, SignalType.STRONG_BET_SIGNAL):
+        if not actionable and self.signal_type in ACTIONABLE_SIGNAL_TYPES:
             if self.status == SignalStatus.ACTIVE and now >= self.expires_at_ms:
                 display_type = SignalType.SIGNAL_EXPIRED.value
             elif self.expiration_reason == ExpirationReason.PRICE_MOVED:
@@ -133,8 +135,7 @@ class LiveSignal:
             "market_ticker": self.market_ticker,
             "signal_type": display_type if actionable else (
                 SignalType.SIGNAL_EXPIRED.value
-                if self.signal_type in (SignalType.BET_NOW, SignalType.STRONG_BET_SIGNAL)
-                and not actionable
+                if self.signal_type in ACTIONABLE_SIGNAL_TYPES and not actionable
                 else display_type
             ),
             "raw_signal_type": self.signal_type.value,
@@ -172,7 +173,7 @@ class LiveSignal:
             "lifecycle": self.lifecycle[-20:],
             # Never leave BET NOW visible when not actionable
             "display_label": (
-                self.signal_type.value
+                signal_display_label(self.signal_type)
                 if actionable
                 else (
                     "SIGNAL EXPIRED"
