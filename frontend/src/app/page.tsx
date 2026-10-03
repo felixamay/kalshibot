@@ -266,7 +266,7 @@ export default function HomePage() {
           </div>
         ) : (
           <div className="border border-dashed border-white/15 p-5 font-mono text-sm text-mist/60">
-            No match needs a bet right now. When a pattern develops, this section says to bet YES on that player now, with a seconds countdown.
+            No live game needs a bet right now. A suggestion appears after the match has started and its pattern has been discovered.
           </div>
         )}
       </section>

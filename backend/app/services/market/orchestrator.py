@@ -6,6 +6,7 @@ import asyncio
 import logging
 import re
 import time
+from datetime import datetime, timezone
 from typing import Any, Optional
 from uuid import uuid4
 
@@ -71,6 +72,20 @@ def extract_market_prices(m: dict[str, Any]) -> dict[str, Optional[float | str]]
         "volume": volume,
         "status": status,
     }
+
+
+def occurrence_start_ms(market: dict[str, Any]) -> Optional[float]:
+    """Kalshi occurrence time is when the match is scheduled. None if we cannot tell."""
+    raw = market.get("occurrence_datetime")
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    try:
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.timestamp() * 1000.0
 
 
 def parse_players_from_market(market: dict[str, Any]) -> tuple[str, str, Optional[str]]:
@@ -258,6 +273,7 @@ class MarketOrchestrator:
                 except Exception:
                     pass
             self._market_meta[ticker] = m
+            start_ms = occurrence_start_ms(m)
             if ticker not in self.engine.snap.matches:
                 player_a, player_b, tournament = parse_players_from_market(m)
                 match_id = str(uuid4())
@@ -269,6 +285,7 @@ class MarketOrchestrator:
                     tournament=tournament or m.get("event_ticker"),
                     market_ticker=ticker,
                     market_db_id=market_db_id,
+                    scheduled_start_ms=start_ms,
                 )
                 # Seed initial prices
                 prices = extract_market_prices(m)
@@ -283,6 +300,7 @@ class MarketOrchestrator:
             else:
                 # Refresh player names if previously unknown
                 ctx = self.engine.snap.matches[ticker]
+                ctx.scheduled_start_ms = start_ms
                 pa, pb, tourn = parse_players_from_market(m)
                 if ctx.player_b == "Opponent" or ctx.player_a == ctx.player_b:
                     ctx.player_a, ctx.player_b = pa, pb

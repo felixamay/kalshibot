@@ -778,6 +778,7 @@ class PatternEngine:
             confirming_signals=len(signals),
             book=book,
             evidence=evidence,
+            discovered=len(same) >= 1,
         )
         if decision in ("PATTERN_ENTRY_SIGNAL", "STRONG_PATTERN_SIGNAL"):
             timeline.append({"t_ms": now_ms or (points[-1].ts_ms if points else 0), "kind": "entry_signal", "price": book.price})
@@ -1603,6 +1604,7 @@ class PatternEngine:
         confirming_signals: int,
         book: BookSnapshot,
         evidence: list[str],
+        discovered: bool = False,
     ) -> tuple[str, bool, list[str], list[str]]:
         settings = self.settings
         blockers: list[str] = []
@@ -1640,9 +1642,12 @@ class PatternEngine:
             blockers.append("Spread is not acceptable")
         if book.liquidity_quality in ("LOW", "VERY_LOW") and not depth_unknown:
             reasons.append("Depth is thin. The developing pattern is still the alert.")
-        # Alert as soon as the pattern is early. Do not wait for more repetitions.
+        # Alert only after this match has already produced the pattern once.
+        if market_ok and stage in ("EARLY", "DEVELOPING") and not discovered:
+            reasons.append("Pattern is forming. No bet until it has been discovered in this live match.")
+            return "PATTERN_DEVELOPING", False, blockers, reasons
         if market_ok and stage in ("EARLY", "DEVELOPING"):
-            reasons.append("Pattern developed. Bet this side now.")
+            reasons.append("Pattern discovered. Bet this side now.")
             if (
                 entry_score >= settings.strong_pattern_entry_score
                 and confidence >= settings.strong_pattern_confidence
@@ -1684,6 +1689,11 @@ class PatternEngine:
         if decision == "FAILED_BREAKOUT":
             return "FAILED BREAKOUT. NO ENTRY. Price crossed resistance and fell back."
         if decision == "PATTERN_DEVELOPING":
+            if kwargs.get("occurrences", 0) < 1:
+                return (
+                    "PATTERN DISCOVERING. No bet until this pattern has been seen in this live match. "
+                    + base
+                )
             return "PATTERN DEVELOPING. " + base + " Waiting for confirmation."
         return base
 

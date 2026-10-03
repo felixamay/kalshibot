@@ -132,6 +132,21 @@ class MatchContext:
     pattern_assessed_ms: float = 0.0
     pattern_cache_key: tuple = ()
     phase_events: list[dict[str, Any]] = field(default_factory=list)
+    # 0 means the caller did not schedule a start (tests). None means unknown, so not live.
+    scheduled_start_ms: Optional[float] = 0.0
+
+
+# A tennis match can run long. Outside this window the contract is not a live game.
+_LIVE_MATCH_WINDOW_MS = 6 * 60 * 60 * 1000
+
+
+def match_is_live(ctx: MatchContext, now_ms: float) -> bool:
+    start = ctx.scheduled_start_ms
+    if start is None:
+        return False
+    if start <= 0:
+        return True
+    return start <= now_ms <= start + _LIVE_MATCH_WINDOW_MS
 
 
 @dataclass
@@ -188,6 +203,7 @@ class SignalEngine:
         market_ticker: str,
         market_db_id: str,
         now_ms: float | None = None,
+        scheduled_start_ms: float | None = 0.0,
     ) -> MatchContext:
         now = now_ms or time.time() * 1000.0
         obs = self.settings.initial_observation_seconds * 1000
@@ -202,6 +218,7 @@ class SignalEngine:
             observation_ends_ms=now + obs,
             analysis_mode=AnalysisMode.OBSERVING.value,
             display_state=SignalType.STUDYING_MATCH,
+            scheduled_start_ms=scheduled_start_ms,
         )
         self.snap.matches[market_ticker] = ctx
         if market_ticker not in self.snap.analyzers:
@@ -278,6 +295,24 @@ class SignalEngine:
             else:
                 ctx.display_state = SignalType.NO_BET
                 ctx.hold_reason = "Market is suspended. No entry."
+            return
+
+        if not match_is_live(ctx, now):
+            active = self._active_signal_for(ticker)
+            if active and active.status == SignalStatus.ACTIVE and active.is_actionable(now):
+                price = market.executable_yes_price() or market.mid
+                active.cancel(
+                    ExpirationReason.PATTERN_INVALIDATED,
+                    price=price,
+                    message="Match is not live. No bet.",
+                    server_now_ms=now,
+                )
+                await self._emit_signal_update(active)
+            ctx.display_state = SignalType.STUDYING_MATCH
+            ctx.hold_reason = (
+                "This game is not live. A bet is suggested only after the match starts "
+                "and a pattern has been discovered."
+            )
             return
 
         # A detected pattern that is about to begin alerts immediately.

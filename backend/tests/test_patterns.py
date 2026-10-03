@@ -9,6 +9,7 @@ import pytest
 from app.config import Settings
 from app.core.enums import ConnectionStatus, SignalType
 from app.database import Base
+from app.services.market.orchestrator import occurrence_start_ms
 from app.services.signals.engine import SignalEngine
 from app.services.signals.patterns import (
     BookSnapshot,
@@ -117,6 +118,58 @@ def test_two_occurrences_are_potential_and_three_are_recurring():
     assert again.occurrences == 3
 
 
+def test_occurrence_time_is_the_match_start():
+    assert occurrence_start_ms({}) is None
+    assert occurrence_start_ms({"occurrence_datetime": ""}) is None
+    start = occurrence_start_ms({"occurrence_datetime": "2026-10-04T14:00:00Z"})
+    assert start == 1791122400000.0
+
+
+@pytest.mark.asyncio
+async def test_a_match_that_has_not_started_is_not_a_bet():
+    s = settings()
+    engine = SignalEngine(s)
+    engine.snap.connection_status = ConnectionStatus.CONNECTED
+    now = time.time() * 1000.0
+    engine.register_match(
+        match_id="m1",
+        player_a="Player A",
+        player_b="Player B",
+        tournament="Test",
+        market_ticker="KXTEST",
+        market_db_id="mk1",
+        now_ms=now,
+        scheduled_start_ms=now + 3_600_000,
+    )
+
+    def fake_estimate(**kwargs):
+        return ProbabilityResult(
+            player="Player A",
+            direction="YES",
+            model_win_probability=0.55,
+            executable_market_probability=0.5,
+            raw_edge=0.05,
+            estimated_net_edge=0.04,
+            source="tennis_enhanced",
+        )
+
+    engine.prob_model.estimate = fake_estimate  # type: ignore[method-assign]
+    seed_pullback(engine.pattern_engine, "KXTEST", now, 56, 53, 60, vol=1)
+    for price in (60, 59, 58, 57, 57.4, 58):
+        await engine.on_market_update(
+            "KXTEST",
+            yes_bid=price - 0.5,
+            yes_ask=price + 0.5,
+            depth_yes=1600,
+            depth_no=700,
+            imbalance=0.32,
+            status="OPEN",
+        )
+    payload = engine.dashboard_payload()
+    assert payload["actionable_signals"] == []
+    assert "not live" in payload["matches"][0]["hold_reason"].lower()
+
+
 def test_a_pattern_about_to_begin_alerts_without_three_confirmations():
     """One existing early pattern is the alert. Three confirmations are not required."""
     engine = PatternEngine(settings())
@@ -144,7 +197,9 @@ def test_a_pattern_about_to_begin_alerts_without_three_confirmations():
         player_a="Player A",
     )
     assert forming.pattern_type == "PULLBACK_RECOVERY"
-    assert forming.decision == "PATTERN_ENTRY_SIGNAL", forming.explanation
+    assert forming.decision == "PATTERN_DEVELOPING", forming.explanation
+    assert forming.tradeable is False
+    assert "discovered" in forming.explanation.lower() or "discovering" in forming.explanation.lower()
 
 
 def test_zero_printed_depth_still_alerts_an_early_pattern():
