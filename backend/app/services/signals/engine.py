@@ -53,6 +53,7 @@ from app.services.signals.mispricing import (
 from app.services.signals.ttl import SignalTTLCalculator
 from app.services.tennis.probability import ProbabilityResult, TennisProbabilityModel
 from app.services.tennis.provider import TennisLiveState
+from app.services.tennis.stage import suggestion_block
 
 logger = logging.getLogger(__name__)
 
@@ -206,7 +207,8 @@ class SignalEngine:
         scheduled_start_ms: float | None = 0.0,
     ) -> MatchContext:
         now = now_ms or time.time() * 1000.0
-        obs = self.settings.initial_observation_seconds * 1000
+        # No 5-minute observation clock. The live stage (first serve, under 85%,
+        # not the last five serves of a clear winner) is what gates a suggestion.
         ctx = MatchContext(
             match_id=match_id,
             player_a=player_a,
@@ -215,7 +217,7 @@ class SignalEngine:
             market_ticker=market_ticker,
             market_db_id=market_db_id,
             observation_started_ms=now,
-            observation_ends_ms=now + obs,
+            observation_ends_ms=now,
             analysis_mode=AnalysisMode.OBSERVING.value,
             display_state=SignalType.STUDYING_MATCH,
             scheduled_start_ms=scheduled_start_ms,
@@ -315,46 +317,23 @@ class SignalEngine:
             )
             return
 
-        # A detected pattern that is about to begin alerts immediately.
-        # The observation clock still runs, but it does not hide that alert.
-        if now < ctx.observation_ends_ms and self.settings.pattern_engine_enabled:
-            if ctx.last_model is not None and ctx.last_confidence is not None:
-                await self._evaluate_entry(ctx, market, now)
-                if ctx.display_state in (
-                    SignalType.PATTERN_ENTRY_SIGNAL,
-                    SignalType.STRONG_PATTERN_SIGNAL,
-                ):
-                    return
-
-        if now < ctx.observation_ends_ms:
+        # Discover and suggest only in the early live window. A late price,
+        # a pre-serve score, or a clear winner in the last five serves is not recorded.
+        block = suggestion_block(ctx.tennis, market.mid)
+        if block:
+            active = self._active_signal_for(ticker)
+            if active and active.status == SignalStatus.ACTIVE and active.is_actionable(now):
+                price = market.executable_yes_price() or market.mid
+                active.cancel(
+                    ExpirationReason.PATTERN_INVALIDATED,
+                    price=price,
+                    message=block,
+                    server_now_ms=now,
+                )
+                await self._emit_signal_update(active)
             ctx.analysis_mode = AnalysisMode.OBSERVING.value
             ctx.display_state = SignalType.STUDYING_MATCH
-            ctx.confirmation_count = 0
-            if self.settings.pattern_engine_enabled:
-                ctx.last_pattern = self._assess_pattern(ctx, market, now)
-            learned = len(self.pattern_engine.match_memory.get(ctx.market_ticker, []))
-            if ctx.last_model is not None and ctx.last_confidence is not None:
-                preview = assess_market(
-                    self.settings,
-                    market,
-                    ctx.last_model,
-                    confidence=ctx.last_confidence,
-                    confirmation_count=0,
-                    tennis_available=bool(ctx.tennis and ctx.tennis.available)
-                    or ctx.last_model.source == "tennis_enhanced",
-                )
-                ctx.last_read = preview
-                ctx.hold_reason = (
-                    "STUDYING MATCH. The observation clock is still learning this match. "
-                    "A pattern that exists and is about to begin is alerted immediately. "
-                    f"Patterns recorded: {learned}. "
-                    + preview.explanation
-                )
-            else:
-                ctx.hold_reason = (
-                    "STUDYING MATCH. The observation clock is still learning this match. "
-                    "A pattern that exists and is about to begin is alerted immediately."
-                )
+            ctx.hold_reason = block
             self._remember_phase(ctx, SignalType.STUDYING_MATCH, now)
             return
 
@@ -890,7 +869,10 @@ class SignalEngine:
         prob = ctx.last_model
         confidence = ctx.last_confidence
         if observing:
-            parts.append("No BET NOW until the observation clock ends.")
+            parts.append(
+                "No pattern is suggested until the match is past the first serve, "
+                "still at or under 85%, and not in the last 5 serves with a clear winner."
+            )
         if prob is None or confidence is None:
             parts.append("Waiting for a usable Kalshi quote.")
             return " ".join(parts)

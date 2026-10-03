@@ -33,6 +33,10 @@ class TennisLiveState:
     break_points_b: Optional[int] = None
     first_serve_pct_a: Optional[float] = None
     first_serve_pct_b: Optional[float] = None
+    # Leading side, 0–100. When set, this is the game percentage used for the 85% gate.
+    game_percent: Optional[float] = None
+    # Points left if the provider already knows. Last 5 serves blocks a clear winner.
+    serves_remaining: Optional[int] = None
     recent_points: list[str] = field(default_factory=list)
     available: bool = False
     source: str = "none"
@@ -56,6 +60,8 @@ class TennisLiveState:
             "break_points_b": self.break_points_b,
             "first_serve_pct_a": self.first_serve_pct_a,
             "first_serve_pct_b": self.first_serve_pct_b,
+            "game_percent": self.game_percent,
+            "serves_remaining": self.serves_remaining,
             "recent_points": self.recent_points,
             "available": self.available,
             "source": self.source,
@@ -149,6 +155,8 @@ class HttpTennisProvider(TennisDataProvider):
                 break_points_b=data.get("break_points_b"),
                 first_serve_pct_a=data.get("first_serve_pct_a"),
                 first_serve_pct_b=data.get("first_serve_pct_b"),
+                game_percent=data.get("game_percent"),
+                serves_remaining=data.get("serves_remaining"),
                 recent_points=list(data.get("recent_points") or []),
                 available=True,
                 source=self.settings.tennis_provider,

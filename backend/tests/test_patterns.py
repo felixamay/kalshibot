@@ -560,7 +560,7 @@ async def test_study_clock_does_not_delay_a_pattern_that_is_about_to_begin():
         )
     payload = engine.dashboard_payload()
     card = payload["matches"][0]
-    assert card["observation_remaining_ms"] > 60_000
+    assert card["observation_remaining_ms"] == pytest.approx(0, abs=50)
     assert card["display_state"] in ("PATTERN_ENTRY_SIGNAL", "STRONG_PATTERN_SIGNAL")
     assert payload["actionable_signals"], card["hold_reason"]
     assert payload["actionable_signals"][0]["player"] == "Player A"

@@ -1,12 +1,9 @@
 "use client";
 
-import { formatMatchTimer, matchClockEndsMs, remainingFromTimestamps } from "@/lib/clock";
 import type { MatchCard } from "@/lib/types";
 
 export function LiveReadCard({
   match,
-  serverNow,
-  snapshotServerTimeMs,
   marketCount,
 }: {
   match: MatchCard;
@@ -14,13 +11,6 @@ export function LiveReadCard({
   snapshotServerTimeMs: number;
   marketCount: number;
 }) {
-  const studying = match.display_state === "STUDYING_MATCH";
-  const observationEnds = matchClockEndsMs(
-    match.observation_ends_ms,
-    snapshotServerTimeMs,
-    match.observation_remaining_ms
-  );
-  const observationRemaining = remainingFromTimestamps(observationEnds, serverNow);
   const stateLabel = match.display_state.replace(/_/g, " ");
 
   return (
@@ -42,16 +32,6 @@ export function LiveReadCard({
             {match.tournament || "Tennis"} · {match.market_ticker}
           </p>
         </div>
-        {studying && (
-          <div className="text-right">
-            <p className="font-mono text-[11px] uppercase tracking-widest text-mist/50">
-              Observation
-            </p>
-            <p className="font-mono text-4xl tabular-nums text-mist">
-              {formatMatchTimer(observationRemaining)}
-            </p>
-          </div>
-        )}
       </div>
 
       <div className="mt-6 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4 font-mono">
@@ -137,9 +117,9 @@ export function LiveReadCard({
         </ul>
       )}
       <p className="mt-3 font-mono text-[11px] uppercase tracking-wider text-mist/40">
-        A pattern that exists and is about to begin is the bet alert, including during the
-        study clock. You bet that player yourself on Kalshi. A late pattern is not a chase.
-        Nothing here is a guaranteed win.
+        A pattern is suggested only after it has been discovered on a live match, after the
+        first serve, while the game is still at or under 85%. The last 5 serves are skipped
+        when the winner is clear. You bet that player yourself on Kalshi.
       </p>
     </section>
   );

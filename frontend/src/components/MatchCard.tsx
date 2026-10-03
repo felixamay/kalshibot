@@ -1,10 +1,6 @@
 "use client";
 
-import {
-  formatMatchTimer,
-  matchClockEndsMs,
-  remainingFromTimestamps,
-} from "@/lib/clock";
+import { formatMatchTimer, remainingFromTimestamps } from "@/lib/clock";
 import type { MatchCard as MatchCardType } from "@/lib/types";
 
 export function MatchCard({
@@ -18,13 +14,6 @@ export function MatchCard({
   snapshotServerTimeMs: number;
   maxDataAgeMs?: number;
 }) {
-  const studying = match.display_state === "STUDYING_MATCH";
-  const observationEnds = matchClockEndsMs(
-    match.observation_ends_ms,
-    snapshotServerTimeMs,
-    match.observation_remaining_ms
-  );
-  const observationRemaining = remainingFromTimestamps(observationEnds, serverNow);
   const cooldownEnds = match.cooldown_until_ms
     ? match.cooldown_until_ms
     : snapshotServerTimeMs + (match.cooldown_remaining_ms || 0);
@@ -156,23 +145,6 @@ export function MatchCard({
           ))}
         </ol>
       ) : null}
-
-      {studying && (
-        <div className="mt-4 border border-signal-mint/30 bg-ink-950/60 px-3 py-3">
-          <p className="font-mono text-xs uppercase tracking-widest text-signal-mint">
-            Studying Match
-          </p>
-          <p className="font-mono text-4xl tabular-nums tracking-tight text-mist mt-1">
-            {formatMatchTimer(observationRemaining)}
-            <span className="font-mono text-sm ml-2 text-mist/50">REMAINING</span>
-          </p>
-          <p className="text-xs text-mist/50 mt-1">
-            {observationRemaining > 0
-              ? "No pattern to bet yet. One that is about to begin appears in Needs a bet without waiting out this clock."
-              : "Observation complete. Reanalyzing."}
-          </p>
-        </div>
-      )}
 
       {cooldownRemaining > 0 && (
         <div className="mt-4 border border-white/15 bg-ink-950/60 px-3 py-3">

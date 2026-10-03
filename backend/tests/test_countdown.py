@@ -374,7 +374,7 @@ def test_confidence_is_not_deadlocked_by_confirmation_count():
 
 
 def test_match_observation_timer_is_absolute():
-    """Live match clocks must be recomputed from an absolute end, not a frozen MM:SS string."""
+    """A configured 5-minute study clock does not delay the match. Cooldown stays absolute."""
     settings = Settings(
         initial_observation_seconds=300,
         reentry_cooldown_seconds=60,
@@ -393,17 +393,10 @@ def test_match_observation_timer_is_absolute():
     )
     payload = engine.dashboard_payload()
     card = payload["matches"][0]
-    assert card["observation_ends_ms"] == started + 300_000
+    assert card["observation_ends_ms"] == started
+    assert card["observation_remaining_ms"] == pytest.approx(0, abs=5)
     assert "market_snapshot" not in card
     server_now = payload["server_time_ms"]
-    assert card["observation_remaining_ms"] == pytest.approx(
-        max(0.0, card["observation_ends_ms"] - server_now), abs=5
-    )
-    # A later client clock shortens the display without a new dashboard payload.
-    later = server_now + 1500
-    client_remaining = max(0.0, card["observation_ends_ms"] - later)
-    assert card["observation_remaining_ms"] - client_remaining == pytest.approx(1500, abs=20)
-    assert client_remaining >= 0
 
     engine.start_cooldown("KXTEST", now_ms=server_now)
     cooled_payload = engine.dashboard_payload()
@@ -459,12 +452,10 @@ async def test_observation_publishes_a_real_read_without_a_bet():
     )
     payload = engine.dashboard_payload()
     card = payload["matches"][0]
-    assert card["display_state"] == "STUDYING_MATCH"
     assert card["model_probability"] is not None
     assert card["estimated_edge"] is not None
     assert card["confidence"] is not None
-    assert "observation clock" in card["hold_reason"]
-    assert "about to begin" in card["hold_reason"]
+    assert "observation clock" not in card["hold_reason"].lower()
     assert payload["actionable_signals"] == []
 
 
