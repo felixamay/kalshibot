@@ -1,0 +1,14 @@
+{
+  "name": "courledge",
+  "private": true,
+  "scripts": {
+    "firebase": "firebase",
+    "firebase:login-ci": "firebase login:ci",
+    "build:hosting": "cd frontend && FIREBASE_HOSTING=1 npm run build",
+    "deploy:hosting": "npm run build:hosting && firebase deploy --only hosting",
+    "projects:list": "firebase projects:list"
+  },
+  "devDependencies": {
+    "firebase-tools": "^13.29.1"
+  }
+}

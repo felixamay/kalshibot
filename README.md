@@ -23,6 +23,32 @@ The Kalshi client is read-only. Write methods (`POST`/`PUT`/`PATCH`/`DELETE`) ar
 
 ---
 
+## Firebase Hosting (custom domain)
+
+Firebase CLI is configured in this repo (`firebase.json`, `.firebaserc`, `scripts/firebase-deploy.sh`).
+
+1. On your machine, generate a CI token:
+   ```bash
+   npx firebase login:ci
+   ```
+2. Paste the token into the agent / shell:
+   ```bash
+   export FIREBASE_TOKEN='PASTE_TOKEN_HERE'
+   export FIREBASE_PROJECT_ID='courledge-live'   # or another unused project id
+   ```
+3. Deploy hosting:
+   ```bash
+   ./scripts/firebase-deploy.sh
+   ```
+4. Live URLs after deploy:
+   - `https://<project-id>.web.app`
+   - `https://<project-id>.firebaseapp.com`
+5. Custom domain: Firebase Console → Hosting → **Add custom domain**.
+
+**Note:** Hosting serves the Next.js frontend. The FastAPI backend must also be publicly reachable (`NEXT_PUBLIC_API_URL` / `NEXT_PUBLIC_WS_URL`). Without a public API URL, the hosted UI loads but cannot stream live Kalshi signals.
+
+---
+
 ## 1. Startup instructions
 
 ### Option A — Docker Compose (recommended)
