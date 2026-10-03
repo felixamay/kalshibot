@@ -41,7 +41,7 @@ class Settings(BaseSettings):
     kalshi_use_auth: bool = True
 
     # Tennis data provider
-    tennis_provider: str = "espn"  # espn | none | sportradar | api_tennis | custom
+    tennis_provider: str = "livetennis"  # livetennis | espn | none | sportradar | api_tennis | custom
     tennis_api_key: str = ""
     tennis_api_base_url: str = ""
     tennis_poll_interval_seconds: float = 5.0

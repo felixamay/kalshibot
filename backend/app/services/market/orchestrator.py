@@ -422,7 +422,7 @@ class MarketOrchestrator:
                 pass
 
     async def _link_scoreboard(self) -> None:
-        """Show a Kalshi contract only while ESPN says that match is in progress."""
+        """Show a Kalshi contract only while the live score feed says that match is in progress."""
         from app.services.tennis.espn import same_match, same_player
 
         live = await self.tennis.list_live_matches()

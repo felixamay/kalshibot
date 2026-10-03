@@ -188,6 +188,10 @@ def create_tennis_provider(settings: Settings | None = None) -> TennisDataProvid
         from app.services.tennis.espn import EspnTennisProvider
 
         return EspnTennisProvider(settings)
+    if name in ("livetennis", "live_tennis", "livetennisapi"):
+        from app.services.tennis.livetennis import LiveTennisProvider
+
+        return LiveTennisProvider(settings)
     if name in ("none", "", "null"):
         return NullTennisProvider()
     if not settings.tennis_api_key:
