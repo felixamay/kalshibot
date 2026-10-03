@@ -449,14 +449,16 @@ class SignalEngine:
         interval = self.settings.pattern_eval_interval_ms
         if ctx.last_pattern is not None and ctx.pattern_cache_key == cache_key:
             return ctx.last_pattern
-        if (
-            ctx.last_pattern is not None
-            and interval > 0
-            and now - ctx.pattern_assessed_ms < interval
-            and ctx.last_pattern.confirmation_count == ctx.confirmation_count
-            and ctx.last_pattern.decision in ("PATTERN_ENTRY_SIGNAL", "STRONG_PATTERN_SIGNAL")
-        ):
-            return ctx.last_pattern
+        # A pattern that is still developing is rechecked on the next quote.
+        # Everything else waits out the interval so scoring cannot stall login.
+        if ctx.last_pattern is not None and interval > 0:
+            developing = ctx.last_pattern.decision == "PATTERN_DEVELOPING"
+            wait_ms = min(80, interval) if developing else interval
+            if (
+                now - ctx.pattern_assessed_ms < wait_ms
+                and ctx.last_pattern.confirmation_count == ctx.confirmation_count
+            ):
+                return ctx.last_pattern
         edge = 0.0
         if ctx.last_read is not None:
             edge = ctx.last_read.uncertainty_adjusted_edge
@@ -1176,7 +1178,7 @@ class SignalEngine:
             "Emitted %s %s ttl=%.1fs edge=%.3f conf=%.1f",
             sig.signal_type.value,
             signal_id,
-            ttl.ttl_seconds,
+            ttl_ms / 1000.0,
             prob.estimated_net_edge,
             confidence,
         )
