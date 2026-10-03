@@ -147,6 +147,9 @@ class Settings(BaseSettings):
     pattern_weaken_health: float = 60.0
     pattern_risk_health: float = 40.0
     pattern_broken_health: float = 25.0
+    # How often a live book is turned into patterns. Ticks are still recorded
+    # between passes. Zero means every update, which can block login.
+    pattern_eval_interval_ms: int = 500
     min_pattern_sample: int = 5
     # Current match outweighs older tennis markets. Not claimed to be optimal.
     weight_memory_current: float = 1.0

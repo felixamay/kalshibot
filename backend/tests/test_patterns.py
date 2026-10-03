@@ -33,6 +33,9 @@ def settings() -> Settings:
         database_url="sqlite+aiosqlite:///:memory:",
         pattern_engine_enabled=True,
         baseline_volatility_floor=0.75,
+        # Production skips rescoring for 500ms so login stays responsive.
+        # These tests send a whole path in one turn and need every tick scored.
+        pattern_eval_interval_ms=0,
     )
 
 
@@ -290,6 +293,28 @@ def test_pattern_health_and_slip_combine_for_exit():
         settings=s,
     ) == "PATTERN_AT_RISK"
     assert time_decay_score(32_000, 15_000, progress=10) > time_decay_score(10_000, 15_000, progress=10)
+
+
+def test_pattern_memory_does_not_grow_without_limit():
+    """A noisy match used to store a pattern per swing and stall login."""
+    engine = PatternEngine(settings())
+    book = early_book(50)
+    points = [
+        make_point(i * 1000.0, 50 + ((i * 17) % 11) - 5, depth_bid=800, depth_ask=600)
+        for i in range(400)
+    ]
+    for slide in range(30):
+        window = points[slide:] + [
+            make_point((400 + slide) * 1000.0, 48 + (slide % 7), depth_bid=800, depth_ask=600)
+        ]
+        engine.assess(
+            ticker="T",
+            points=window[-400:],
+            book=book,
+            now_ms=window[-1].ts_ms,
+        )
+    assert len(engine.match_memory["T"]) <= 40
+    assert len(engine.historical) <= 400
 
 
 def test_pattern_tables_and_backtest_do_not_auto_select():

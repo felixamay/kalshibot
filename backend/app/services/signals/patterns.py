@@ -944,6 +944,9 @@ class PatternEngine:
         if len(swings) < 4 or len(points) < 4:
             return
         confirmed = swings[:-1]
+        # Only the newest swings are new information. Older setups are already stored.
+        if len(confirmed) > 8:
+            confirmed = confirmed[-8:]
         existing = {item.pattern_id for item in self.match_memory[ticker]}
         for index in range(len(confirmed) - 2):
             first, second, third = confirmed[index : index + 3]
@@ -959,6 +962,15 @@ class PatternEngine:
         supports = support_zones([price for _, price, kind in confirmed if kind == "LOW"], zone_width)
         resistances = resistance_zones([price for _, price, kind in confirmed if kind == "HIGH"], zone_width)
         self._store_zone_reactions(ticker, points, confirmed, supports, resistances, vol, tournament, existing)
+        self._trim_memory(ticker)
+
+    def _trim_memory(self, ticker: str) -> None:
+        """Keep recent setups. An uncapped library makes every quote slower than login."""
+        mem = self.match_memory.get(ticker)
+        if mem and len(mem) > 40:
+            self.match_memory[ticker] = mem[-40:]
+        if len(self.historical) > 400:
+            self.historical = self.historical[-400:]
 
     def _instance_from_triple(
         self,
@@ -981,8 +993,7 @@ class PatternEngine:
         low = points[second[0]]
         end = points[third[0]]
         success = recovery >= pullback * 0.75
-        span = points[first[0] : third[0] + 1]
-        flow = sum(point.trade_direction for point in span) / max(len(span), 1)
+        flow = (start.trade_direction + low.trade_direction + end.trade_direction) / 3.0
         pattern_id = f"{ticker}:PULLBACK_RECOVERY:{int(start.ts_ms)}:{int(second[1] * 10)}"
         return PatternInstance(
             pattern_id=pattern_id,
@@ -997,8 +1008,11 @@ class PatternEngine:
             duration=max(0.0, end.ts_ms - start.ts_ms),
             price_change=third[1] - first[1],
             volatility=vol,
-            spread=sum(point.spread for point in span) / max(len(span), 1),
-            liquidity=sum(point.depth_bid + point.depth_ask for point in span) / max(len(span), 1),
+            spread=(start.spread + low.spread + end.spread) / 3.0,
+            liquidity=(
+                start.depth_bid + start.depth_ask + low.depth_bid + low.depth_ask + end.depth_bid + end.depth_ask
+            )
+            / 3.0,
             orderbook_before=_book_slice(start),
             orderbook_during=_book_slice(low),
             orderbook_after=_book_slice(end),

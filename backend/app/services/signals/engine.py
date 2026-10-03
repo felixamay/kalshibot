@@ -429,7 +429,15 @@ class SignalEngine:
         analyzer = self.snap.analyzers.get(ctx.market_ticker)
         tick_count = len(analyzer.ticks_since(ctx.observation_started_ms)) if analyzer else 0
         cache_key = (tick_count, round(market.mid, 2), ctx.confirmation_count, round(market.imbalance, 2))
+        interval = self.settings.pattern_eval_interval_ms
         if ctx.last_pattern is not None and ctx.pattern_cache_key == cache_key:
+            return ctx.last_pattern
+        if (
+            ctx.last_pattern is not None
+            and interval > 0
+            and now - ctx.pattern_assessed_ms < interval
+            and ctx.last_pattern.confirmation_count == ctx.confirmation_count
+        ):
             return ctx.last_pattern
         edge = 0.0
         if ctx.last_read is not None:

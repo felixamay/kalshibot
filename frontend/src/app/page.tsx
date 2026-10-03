@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ConnectionBadge } from "@/components/ConnectionBadge";
 import { ManualBetModal } from "@/components/ManualBetModal";
 import { LiveReadCard } from "@/components/LiveReadCard";
@@ -33,12 +33,15 @@ export default function HomePage() {
   const { dashboard, signals, connection, wsState, serverNow, apiUrl } =
     useLiveFeed();
   const [alertsEnabled, setAlertsEnabled] = useState(true);
-  const [token, setToken] = useState<string | null>(() =>
-    typeof window !== "undefined" ? localStorage.getItem("kt_token") : null
-  );
+  // Start empty. A useState initializer runs on the server and is not re-run
+  // on hydration, so a saved token would be ignored in every new tab.
+  const [token, setToken] = useState<string | null>(null);
+  const [authReady, setAuthReady] = useState(false);
   const [authEmail, setAuthEmail] = useState("");
   const [authPass, setAuthPass] = useState("");
   const [authMode, setAuthMode] = useState<"login" | "register" | null>(null);
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [authBusy, setAuthBusy] = useState(false);
   const [placeSignal, setPlaceSignal] = useState<LiveSignal | null>(null);
   const [analysisSignal, setAnalysisSignal] = useState<LiveSignal | null>(null);
 
@@ -103,20 +106,66 @@ export default function HomePage() {
     });
   }, [signals, serverNow, betMatches]);
 
+  useEffect(() => {
+    const read = () => localStorage.getItem("kt_token");
+    setToken(read());
+    setAuthReady(true);
+    const onStorage = (event: StorageEvent) => {
+      if (event.key === "kt_token") setToken(event.newValue);
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
+
+  useEffect(() => {
+    if (!token) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`${apiUrl}/api/auth/me`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (res.status === 401 && !cancelled) {
+          localStorage.removeItem("kt_token");
+          setToken(null);
+        }
+      } catch {
+        // Keep the saved session if the API is briefly unreachable.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [token, apiUrl]);
+
   const auth = async () => {
-    if (!authMode) return;
-    const res = await fetch(`${apiUrl}/api/auth/${authMode}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email: authEmail, password: authPass }),
-    });
-    const data = await res.json();
-    if (res.ok) {
-      localStorage.setItem("kt_token", data.access_token);
-      setToken(data.access_token);
-      setAuthMode(null);
-    } else {
-      alert(data.detail || "Auth failed");
+    if (!authMode || authBusy) return;
+    setAuthBusy(true);
+    setAuthError(null);
+    try {
+      const res = await fetch(`${apiUrl}/api/auth/${authMode}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: authEmail.trim(), password: authPass }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.access_token) {
+        localStorage.setItem("kt_token", data.access_token);
+        setToken(data.access_token);
+        setAuthMode(null);
+        setAuthPass("");
+        setAuthError(null);
+      } else {
+        const detail = data.detail;
+        const message = Array.isArray(detail)
+          ? detail.map((item: { msg?: string }) => item.msg || "Check the email and password.").join(" ")
+          : detail || "Sign-in failed. Check the email and password.";
+        setAuthError(String(message));
+      }
+    } catch {
+      setAuthError("Could not reach the server. Try again in a moment.");
+    } finally {
+      setAuthBusy(false);
     }
   };
 
@@ -146,7 +195,7 @@ export default function HomePage() {
             >
               Alerts {alertsEnabled ? "On" : "Off"}
             </button>
-            {token ? (
+            {authReady && token ? (
               <button
                 type="button"
                 onClick={() => {
@@ -157,7 +206,7 @@ export default function HomePage() {
               >
                 Log out
               </button>
-            ) : (
+            ) : authReady ? (
               <>
                 <button
                   type="button"
@@ -341,38 +390,58 @@ export default function HomePage() {
 
       {authMode && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
-          <div className="w-full max-w-sm border border-white/15 bg-ink-900 p-5">
+          <form
+            className="w-full max-w-sm border border-white/15 bg-ink-900 p-5"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void auth();
+            }}
+          >
             <h3 className="font-display text-2xl capitalize">{authMode}</h3>
             <input
               className="mt-4 w-full bg-ink-950 border border-white/15 px-3 py-2"
               placeholder="Email"
+              type="email"
+              autoComplete="email"
               value={authEmail}
               onChange={(e) => setAuthEmail(e.target.value)}
+              required
             />
             <input
               type="password"
+              autoComplete={authMode === "register" ? "new-password" : "current-password"}
               className="mt-2 w-full bg-ink-950 border border-white/15 px-3 py-2"
               placeholder="Password"
               value={authPass}
               onChange={(e) => setAuthPass(e.target.value)}
+              required
+              minLength={authMode === "register" ? 8 : 1}
             />
+            {authError && (
+              <p className="mt-3 text-sm text-red-300" role="alert">
+                {authError}
+              </p>
+            )}
             <div className="mt-4 flex gap-2">
               <button
                 type="button"
                 className="flex-1 border border-white/20 py-2 font-mono text-xs uppercase"
-                onClick={() => setAuthMode(null)}
+                onClick={() => {
+                  setAuthMode(null);
+                  setAuthError(null);
+                }}
               >
                 Cancel
               </button>
               <button
-                type="button"
-                className="flex-1 bg-signal-lime text-ink-950 py-2 font-mono text-xs uppercase font-semibold"
-                onClick={auth}
+                type="submit"
+                disabled={authBusy}
+                className="flex-1 bg-signal-lime text-ink-950 py-2 font-mono text-xs uppercase font-semibold disabled:opacity-60"
               >
-                Continue
+                {authBusy ? "Please wait" : "Continue"}
               </button>
             </div>
-          </div>
+          </form>
         </div>
       )}
     </main>
