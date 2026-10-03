@@ -135,6 +135,8 @@ class MatchContext:
     phase_events: list[dict[str, Any]] = field(default_factory=list)
     # 0 means the caller did not schedule a start (tests). None means unknown, so not live.
     scheduled_start_ms: Optional[float] = 0.0
+    # None uses the schedule. True/False comes from the live score feed.
+    score_confirmed: Optional[bool] = None
 
 
 # A tennis match can run long. Outside this window the contract is not a live game.
@@ -142,6 +144,12 @@ _LIVE_MATCH_WINDOW_MS = 6 * 60 * 60 * 1000
 
 
 def match_is_live(ctx: MatchContext, now_ms: float) -> bool:
+    # The score feed is the authority when it has spoken. Kalshi's listed
+    # start can be a day off, or still open long after the match ended.
+    if ctx.score_confirmed is True:
+        return True
+    if ctx.score_confirmed is False:
+        return False
     start = ctx.scheduled_start_ms
     if start is None:
         return False

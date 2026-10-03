@@ -42,6 +42,7 @@ export function MatchCard({
             <span className="text-mist/40 mx-2">vs</span>
             {match.player_b}
           </h3>
+          <ScoreLink tennis={match.tennis} />
         </div>
         <StatusPill status={match.market_status} />
       </div>
@@ -168,6 +169,26 @@ export function MatchCard({
         {match.market_ticker}
       </p>
     </article>
+  );
+}
+
+function ScoreLink({ tennis }: { tennis?: MatchCardType["tennis"] }) {
+  const score = tennis && typeof tennis.set_score === "string" ? tennis.set_score : "";
+  const href = tennis && typeof tennis.source_url === "string" ? tennis.source_url : "";
+  if (!tennis?.available && !score) return null;
+  return (
+    <p className="mt-1 font-mono text-[11px] uppercase tracking-wider text-mist/60">
+      {score ? `Live ${score}` : "Live"}
+      {href ? (
+        <>
+          {" "}
+          ·{" "}
+          <a href={href} target="_blank" rel="noreferrer" className="text-signal-mint underline">
+            ESPN score
+          </a>
+        </>
+      ) : null}
+    </p>
   );
 }
 

@@ -149,6 +149,7 @@ class MarketOrchestrator:
         self._tasks: list[asyncio.Task] = []
         self._stop = asyncio.Event()
         self._market_meta: dict[str, dict[str, Any]] = {}
+        self._linked_tickers: set[str] = set()
 
     async def start(self) -> None:
         self._stop.clear()
@@ -258,12 +259,10 @@ class MarketOrchestrator:
 
     async def _discover(self) -> None:
         markets = await self.client.search_tennis_markets()
-        tickers: list[str] = []
         for m in markets:
             ticker = m.get("ticker")
             if not ticker:
                 continue
-            tickers.append(ticker)
             # Enrich only when list payload lacks rules (needed for opponent parsing)
             if not m.get("rules_primary"):
                 try:
@@ -273,42 +272,8 @@ class MarketOrchestrator:
                 except Exception:
                     pass
             self._market_meta[ticker] = m
-            start_ms = occurrence_start_ms(m)
-            if ticker not in self.engine.snap.matches:
-                player_a, player_b, tournament = parse_players_from_market(m)
-                match_id = str(uuid4())
-                market_db_id = str(uuid4())
-                self.engine.register_match(
-                    match_id=match_id,
-                    player_a=player_a,
-                    player_b=player_b,
-                    tournament=tournament or m.get("event_ticker"),
-                    market_ticker=ticker,
-                    market_db_id=market_db_id,
-                    scheduled_start_ms=start_ms,
-                )
-                # Seed initial prices
-                prices = extract_market_prices(m)
-                await self.engine.on_market_update(
-                    ticker,
-                    yes_bid=prices["yes_bid"],  # type: ignore[arg-type]
-                    yes_ask=prices["yes_ask"],  # type: ignore[arg-type]
-                    last_trade=prices["last_trade"],  # type: ignore[arg-type]
-                    volume=prices["volume"],  # type: ignore[arg-type]
-                    status=str(prices["status"]),
-                )
-            else:
-                # Refresh player names if previously unknown
-                ctx = self.engine.snap.matches[ticker]
-                ctx.scheduled_start_ms = start_ms
-                pa, pb, tourn = parse_players_from_market(m)
-                if ctx.player_b == "Opponent" or ctx.player_a == ctx.player_b:
-                    ctx.player_a, ctx.player_b = pa, pb
-                if tourn:
-                    ctx.tournament = tourn
 
-        if self.ws and tickers:
-            await self.ws.subscribe_markets(tickers)
+        await self._link_scoreboard()
         # If WS never got messages, still mark connected when REST works
         if markets and self.engine.snap.connection_status == ConnectionStatus.DISCONNECTED:
             # REST path is alive — use RECONNECTING until WS connects, but allow analysis via poll
@@ -339,7 +304,7 @@ class MarketOrchestrator:
         """One list call per series updates every tracked market's bid/ask."""
         if not self.engine.snap.matches:
             return
-        for series in ("KXWTAMATCH", "KXATPMATCH"):
+        for series in ("KXWTAMATCH", "KXATPMATCH", "KXWTACHALLENGERMATCH", "KXATPCHALLENGERMATCH"):
             try:
                 data = await self.client.get_markets(status="open", series_ticker=series, limit=200)
             except Exception as exc:
@@ -446,9 +411,7 @@ class MarketOrchestrator:
     async def _tennis_loop(self) -> None:
         while not self._stop.is_set():
             try:
-                for ticker, ctx in list(self.engine.snap.matches.items()):
-                    state = await self.tennis.get_live_match(ctx.player_a, ctx.player_b)
-                    ctx.tennis = state
+                await self._link_scoreboard()
             except Exception as exc:
                 logger.debug("Tennis loop: %s", exc)
             try:
@@ -457,3 +420,66 @@ class MarketOrchestrator:
                 )
             except asyncio.TimeoutError:
                 pass
+
+    async def _link_scoreboard(self) -> None:
+        """Show a Kalshi contract only while ESPN says that match is in progress."""
+        from app.services.tennis.espn import last_name, same_match
+
+        live = await self.tennis.list_live_matches()
+        if live is None:
+            return
+        linked: set[str] = set()
+        for ticker, meta in self._market_meta.items():
+            player_a, player_b, tournament = parse_players_from_market(meta)
+            state = next(
+                (
+                    item
+                    for item in live
+                    if item.available and same_match(player_a, player_b, item.player_a, item.player_b)
+                ),
+                None,
+            )
+            if state is None:
+                continue
+            # Point the set score at the YES player on this contract.
+            oriented = await self.tennis.get_live_match(player_a, player_b)
+            if oriented is None or not oriented.available:
+                oriented = state
+            linked.add(ticker)
+            created = ticker not in self.engine.snap.matches
+            if created:
+                self.engine.register_match(
+                    match_id=str(uuid4()),
+                    player_a=player_a,
+                    player_b=player_b,
+                    tournament=tournament or meta.get("event_ticker"),
+                    market_ticker=ticker,
+                    market_db_id=str(uuid4()),
+                    scheduled_start_ms=occurrence_start_ms(meta),
+                )
+            ctx = self.engine.snap.matches[ticker]
+            ctx.score_confirmed = True
+            ctx.tennis = oriented
+            full_a, full_b = state.player_a, state.player_b
+            if last_name(player_a) == last_name(full_b):
+                full_a, full_b = full_b, full_a
+            ctx.player_a, ctx.player_b = full_a or player_a, full_b or player_b
+            if tournament:
+                ctx.tournament = tournament
+            if created:
+                prices = extract_market_prices(meta)
+                await self.engine.on_market_update(
+                    ticker,
+                    yes_bid=prices["yes_bid"],  # type: ignore[arg-type]
+                    yes_ask=prices["yes_ask"],  # type: ignore[arg-type]
+                    last_trade=prices["last_trade"],  # type: ignore[arg-type]
+                    volume=prices["volume"],  # type: ignore[arg-type]
+                    status=str(prices["status"]),
+                )
+        for ticker, ctx in self.engine.snap.matches.items():
+            if ticker not in linked:
+                ctx.score_confirmed = False
+                ctx.tennis = None
+        if linked and linked != self._linked_tickers and self.ws:
+            await self.ws.subscribe_markets(sorted(linked))
+        self._linked_tickers = linked

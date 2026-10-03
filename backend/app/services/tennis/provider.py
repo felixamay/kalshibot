@@ -40,6 +40,7 @@ class TennisLiveState:
     recent_points: list[str] = field(default_factory=list)
     available: bool = False
     source: str = "none"
+    source_url: Optional[str] = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -65,6 +66,7 @@ class TennisLiveState:
             "recent_points": self.recent_points,
             "available": self.available,
             "source": self.source,
+            "source_url": self.source_url,
             "analysis_note": None if self.available else "MARKET-ONLY ANALYSIS",
         }
 
@@ -73,6 +75,10 @@ class TennisDataProvider(ABC):
     @abstractmethod
     async def get_live_match(self, player_a: str, player_b: str) -> Optional[TennisLiveState]:
         ...
+
+    async def list_live_matches(self) -> Optional[list[TennisLiveState]]:
+        """In-progress matches. None means the feed failed and the last board should stand."""
+        return []
 
     @abstractmethod
     async def close(self) -> None:
@@ -177,6 +183,15 @@ class HttpTennisProvider(TennisDataProvider):
 
 def create_tennis_provider(settings: Settings | None = None) -> TennisDataProvider:
     settings = settings or get_settings()
-    if settings.tennis_provider in ("none", "", "null") or not settings.tennis_api_key:
+    name = (settings.tennis_provider or "espn").strip().lower()
+    if name == "espn":
+        from app.services.tennis.espn import EspnTennisProvider
+
+        return EspnTennisProvider(settings)
+    if name in ("none", "", "null"):
         return NullTennisProvider()
+    if not settings.tennis_api_key:
+        from app.services.tennis.espn import EspnTennisProvider
+
+        return EspnTennisProvider(settings)
     return HttpTennisProvider(settings)

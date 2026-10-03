@@ -31,6 +31,25 @@ export function LiveReadCard({
           <p className="mt-1 font-mono text-xs uppercase tracking-widest text-mist/50">
             {match.tournament || "Tennis"} · {match.market_ticker}
           </p>
+          {typeof match.tennis?.set_score === "string" && match.tennis.set_score ? (
+            <p className="mt-2 font-mono text-sm text-signal-mint">
+              Live {match.tennis.set_score}
+              {typeof match.tennis.source_url === "string" ? (
+                <>
+                  {" "}
+                  ·{" "}
+                  <a
+                    href={match.tennis.source_url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="underline"
+                  >
+                    ESPN score
+                  </a>
+                </>
+              ) : null}
+            </p>
+          ) : null}
         </div>
       </div>
 

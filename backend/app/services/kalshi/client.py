@@ -232,13 +232,14 @@ class KalshiReadOnlyClient:
         found: list[dict[str, Any]] = []
         seen: set[str] = set()
 
-        # Prefer match-winner style series first
+        # Singles match-winner contracts, including challengers. Main-tour
+        # markets alone hide the matches that are actually on court.
         preferred_series = (
             "KXWTAMATCH",
             "KXATPMATCH",
+            "KXWTACHALLENGERMATCH",
+            "KXATPCHALLENGERMATCH",
             "KXTENNISMATCH",
-            "KXATPMATCHWINNER",
-            "KXWTAMATCHWINNER",
         )
 
         try:
@@ -262,7 +263,7 @@ class KalshiReadOnlyClient:
                 if st and st not in ordered:
                     ordered.append(st)
 
-            for st in ordered[:12]:
+            for st in ordered[:16]:
                 if not st:
                     continue
                 try:
@@ -317,17 +318,23 @@ class KalshiReadOnlyClient:
                 if not cursor:
                     break
 
-        # Prefer actual match-winner markets. Futures/retirements are not live matches.
+        # Match-winner contracts only. Futures and round markets are not a live game.
+        match_prefixes = (
+            "KXWTAMATCH",
+            "KXATPMATCH",
+            "KXWTACHALLENGERMATCH",
+            "KXATPCHALLENGERMATCH",
+        )
         match_only = [
             m
             for m in found
-            if (m.get("ticker") or "").upper().startswith(("KXWTAMATCH", "KXATPMATCH"))
+            if (m.get("ticker") or "").upper().startswith(match_prefixes)
         ]
         if match_only:
             found = match_only
 
         logger.info("Discovered %d tennis-related Kalshi markets", len(found))
-        return found[:60]
+        return found[:160]
 
 
 # Explicit guard: ensure module never defines write helpers
