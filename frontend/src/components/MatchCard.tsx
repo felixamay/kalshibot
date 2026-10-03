@@ -118,7 +118,13 @@ export function MatchCard({
       </div>
 
       {match.pattern && match.pattern.pattern_name && (
-        <PatternStatus pattern={match.pattern} />
+        <PatternStatus
+          pattern={match.pattern}
+          offering={
+            match.display_state === "PATTERN_ENTRY_SIGNAL" ||
+            match.display_state === "STRONG_PATTERN_SIGNAL"
+          }
+        />
       )}
 
       {match.hold_reason && (
@@ -194,8 +200,10 @@ function ScoreLink({ tennis }: { tennis?: MatchCardType["tennis"] }) {
 
 function PatternStatus({
   pattern,
+  offering,
 }: {
   pattern: NonNullable<import("@/lib/types").MatchCard["pattern"]>;
+  offering: boolean;
 }) {
   return (
     <div className="mt-4 border border-white/10 bg-ink-950/50 px-3 py-3">
@@ -203,7 +211,7 @@ function PatternStatus({
         Pattern status
       </p>
       <p className="mt-1 font-display text-xl">{pattern.pattern_name}</p>
-      {(pattern.decision === "PATTERN_ENTRY_SIGNAL" || pattern.decision === "STRONG_PATTERN_SIGNAL") && (
+      {offering && (
         <p className="mt-2 font-mono text-sm uppercase tracking-wider text-signal-lime">
           {pattern.player_side === "NO"
             ? `Bet NO on ${pattern.player || "this player"} now`
