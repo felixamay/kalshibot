@@ -103,9 +103,10 @@ class SignalConfidenceCalculator:
             + s.weight_volatility_risk * vol_c
         )
 
-        # Confirmation ramp: incomplete confirmations cannot reach BET_NOW thresholds alone
-        if confirmation_count < req:
-            conf *= 0.55 + 0.45 * (confirmation_count / max(req, 1))
+        # Confirmation count is enforced separately by the signal engine
+        # (ENTRY_CONFIRMATION_COUNT). Do not scale confidence here — that
+        # created a deadlock where the counter could never increment.
+        _ = (confirmation_count, req)
 
         return ConfidenceBreakdown(
             confidence=round(min(100.0, max(0.0, conf)), 1),

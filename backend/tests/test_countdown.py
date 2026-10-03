@@ -320,7 +320,47 @@ async def test_edge_and_confidence_cancel(settings: Settings):
     assert not sig.is_actionable()
 
 
-def test_kalshi_client_blocks_writes():
+def test_confidence_is_not_deadlocked_by_confirmation_count():
+    """Entry gate must be reachable before ENTRY_CONFIRMATION_COUNT is met."""
+    from app.services.market.analyzer import RollingMarketAnalyzer
+    from app.services.signals.confidence import SignalConfidenceCalculator
+    from app.services.tennis.probability import ProbabilityResult
+
+    settings = Settings(
+        min_bet_confidence=85,
+        entry_confirmation_count=5,
+        min_liquidity_contracts=10,
+        database_url="sqlite+aiosqlite:///:memory:",
+    )
+    calc = SignalConfidenceCalculator(settings)
+    analyzer = RollingMarketAnalyzer("T", settings.window_sizes)
+    base = time.time() * 1000.0
+    for i in range(12):
+        analyzer.update(
+            yes_bid=60,
+            yes_ask=62,
+            depth_yes=400,
+            depth_no=300,
+            imbalance=0.35,
+            ts_ms=base + i * 400,
+        )
+    prob = ProbabilityResult(
+        player="A",
+        direction="YES",
+        model_win_probability=0.75,
+        executable_market_probability=0.62,
+        raw_edge=0.13,
+        estimated_net_edge=0.08,
+        source="test",
+    )
+    at_zero = calc.calculate(analyzer.state, prob, confirmation_count=0)
+    at_full = calc.calculate(
+        analyzer.state, prob, confirmation_count=settings.entry_confirmation_count
+    )
+    assert at_zero.confidence == at_full.confidence
+    # Previously this was scaled by ~0.55 at count 0, so the entry gate could never open.
+    assert at_zero.confidence > 70
+
     from app.services.kalshi.client import KalshiReadOnlyClient
     import asyncio
 

@@ -106,7 +106,9 @@ class KalshiWebSocketClient:
                 await self._set_status(ConnectionStatus.RECONNECTING)
                 extra_headers = {}
                 # Authenticated WS when key is configured
-                if self.settings.kalshi_api_key_id and self.settings.kalshi_private_key_pem:
+                if self.settings.kalshi_api_key_id and (
+                    self.settings.kalshi_private_key_pem or self.settings.kalshi_private_key_path
+                ):
                     try:
                         from app.services.kalshi.client import KalshiReadOnlyClient
 
@@ -152,7 +154,15 @@ class KalshiWebSocketClient:
             except ConnectionClosed as exc:
                 logger.warning("Kalshi WS closed: %s", exc)
             except Exception as exc:
-                logger.error("Kalshi WS error: %s", exc)
+                msg = str(exc)
+                if "401" in msg:
+                    logger.warning(
+                        "Kalshi WebSocket requires an API key (HTTP 401). "
+                        "REST quotes continue. Set KALSHI_API_KEY_ID and KALSHI_PRIVATE_KEY_PATH."
+                    )
+                    backoff = 60.0
+                else:
+                    logger.error("Kalshi WS error: %s", exc)
             finally:
                 self._ws = None
                 await self._set_status(ConnectionStatus.DISCONNECTED)

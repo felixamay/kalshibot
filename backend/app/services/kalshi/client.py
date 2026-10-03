@@ -11,7 +11,7 @@ from typing import Any, Optional
 
 import httpx
 from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import padding, rsa
+from cryptography.hazmat.primitives.asymmetric import ed25519, padding, rsa
 
 from app.config import Settings, get_settings
 
@@ -36,7 +36,7 @@ class KalshiReadOnlyClient:
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or get_settings()
         self.base_url = self.settings.kalshi_api_base_url.rstrip("/")
-        self._private_key: Optional[rsa.RSAPrivateKey] = None
+        self._private_key: Optional[rsa.RSAPrivateKey | ed25519.Ed25519PrivateKey] = None
         self._client: Optional[httpx.AsyncClient] = None
         self._load_private_key()
 
@@ -72,14 +72,18 @@ class KalshiReadOnlyClient:
         # Kalshi signing: timestamp + method + path (without query string)
         path_no_query = path.split("?")[0]
         message = f"{timestamp_ms}{method.upper()}{path_no_query}".encode("utf-8")
-        signature = self._private_key.sign(
-            message,
-            padding.PSS(
-                mgf=padding.MGF1(hashes.SHA256()),
-                salt_length=padding.PSS.DIGEST_LENGTH,
-            ),
-            hashes.SHA256(),
-        )
+        # Kalshi: RSA-PSS SHA-256, or raw Ed25519 (docs.kalshi.com API keys)
+        if isinstance(self._private_key, ed25519.Ed25519PrivateKey):
+            signature = self._private_key.sign(message)
+        else:
+            signature = self._private_key.sign(
+                message,
+                padding.PSS(
+                    mgf=padding.MGF1(hashes.SHA256()),
+                    salt_length=padding.PSS.DIGEST_LENGTH,
+                ),
+                hashes.SHA256(),
+            )
         return base64.b64encode(signature).decode("utf-8")
 
     def _auth_headers(self, method: str, full_path: str) -> dict[str, str]:
@@ -313,19 +317,17 @@ class KalshiReadOnlyClient:
                 if not cursor:
                     break
 
-        # Prefer match markets over spreads/totals when presenting
-        def _rank(m: dict[str, Any]) -> int:
-            t = (m.get("ticker") or "").upper()
-            title = (m.get("title") or "").lower()
-            if "MATCH" in t or "win" in title:
-                return 0
-            if "SPREAD" in t or "TOTAL" in t:
-                return 2
-            return 1
+        # Prefer actual match-winner markets. Futures/retirements are not live matches.
+        match_only = [
+            m
+            for m in found
+            if (m.get("ticker") or "").upper().startswith(("KXWTAMATCH", "KXATPMATCH"))
+        ]
+        if match_only:
+            found = match_only
 
-        found.sort(key=_rank)
         logger.info("Discovered %d tennis-related Kalshi markets", len(found))
-        return found[:80]  # cap tracked markets for rate limits
+        return found[:60]
 
 
 # Explicit guard: ensure module never defines write helpers

@@ -31,7 +31,7 @@ class Settings(BaseSettings):
 
     # Kalshi Production API
     kalshi_api_base_url: str = "https://api.elections.kalshi.com/trade-api/v2"
-    kalshi_ws_url: str = "wss://api.elections.kalshi.com/trade-api/ws/v2"
+    kalshi_ws_url: str = "wss://external-api-ws.kalshi.com/trade-api/ws/v2"
     kalshi_api_key_id: str = ""
     kalshi_private_key_path: str = ""
     kalshi_private_key_pem: str = ""

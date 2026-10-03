@@ -98,11 +98,6 @@ export function useLiveFeed() {
           } else if (msg.type === "connection") {
             setConnection(msg.payload.status);
           } else if (msg.type === "heartbeat") {
-            if (msg.payload?.server_time_ms) {
-              clockRef.current.offsetMs =
-                msg.payload.server_time_ms - Date.now();
-              setServerNow(clockRef.current.serverNow());
-            }
             if (msg.payload?.connection_status) {
               setConnection(msg.payload.connection_status);
             }

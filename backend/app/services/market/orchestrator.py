@@ -185,9 +185,22 @@ class MarketOrchestrator:
                 except (TypeError, ValueError):
                     return None
 
-            yes_bid = _c(payload.get("yes_bid") or payload.get("bid"))
-            yes_ask = _c(payload.get("yes_ask") or payload.get("ask"))
-            last = _c(payload.get("price") or payload.get("yes_price") or payload.get("last_price"))
+            yes_bid = _c(payload.get("yes_bid_dollars") or payload.get("yes_bid") or payload.get("bid"))
+            yes_ask = _c(payload.get("yes_ask_dollars") or payload.get("yes_ask") or payload.get("ask"))
+            last = _c(
+                payload.get("price_dollars")
+                or payload.get("yes_price_dollars")
+                or payload.get("price")
+                or payload.get("yes_price")
+                or payload.get("last_price")
+            )
+            # Dollar quotes (0-1) must become cents
+            def _maybe_cents(v: Optional[float]) -> Optional[float]:
+                if v is None:
+                    return None
+                return v * 100.0 if 0 <= v <= 1 else v
+
+            yes_bid, yes_ask, last = _maybe_cents(yes_bid), _maybe_cents(yes_ask), _maybe_cents(last)
             # orderbook delta
             if "yes" in payload and isinstance(payload.get("yes"), dict):
                 # sometimes nested
@@ -286,64 +299,15 @@ class MarketOrchestrator:
             logger.info("NO LIVE TENNIS MARKETS")
 
     async def _poll_loop(self) -> None:
-        """REST polling backup + keeps data fresh when WS is quiet."""
-        cursor = 0
-        batch_size = 15
+        """Keep quotes fresh with bulk series reads; rotate order books."""
+        book_cursor = 0
         while not self._stop.is_set():
             try:
-                tickers = list(self.engine.snap.matches.keys())
-                if not tickers:
-                    await asyncio.sleep(self.settings.market_poll_interval_seconds)
-                    continue
-                batch = tickers[cursor : cursor + batch_size]
-                cursor = (cursor + batch_size) % max(len(tickers), 1)
-                for ticker in batch:
-                    try:
-                        data = await self.client.get_market(ticker)
-                        m = data.get("market") or data
-                        ob = {}
-                        try:
-                            ob_raw = await self.client.get_orderbook(ticker, depth=10)
-                            ob = ob_raw.get("orderbook_fp") or ob_raw.get("orderbook") or ob_raw
-                        except Exception:
-                            ob = {}
-                        depth_yes = depth_no = imbalance = None
-                        yes_levels = ob.get("yes_dollars") or ob.get("yes") or []
-                        no_levels = ob.get("no_dollars") or ob.get("no") or []
-                        if yes_levels or no_levels:
-                            try:
-                                def _depth(levels: list) -> float:
-                                    total = 0.0
-                                    for level in levels[:5]:
-                                        if isinstance(level, (list, tuple)) and len(level) >= 2:
-                                            total += float(level[1])
-                                        elif isinstance(level, dict):
-                                            total += float(level.get("size") or level.get("quantity") or 0)
-                                    return total
-
-                                depth_yes = _depth(yes_levels)
-                                depth_no = _depth(no_levels)
-                                total = depth_yes + depth_no
-                                imbalance = ((depth_yes - depth_no) / total) if total else 0.0
-                            except Exception:
-                                pass
-                        prices = extract_market_prices(m)
-                        await self.engine.on_market_update(
-                            ticker,
-                            yes_bid=prices["yes_bid"],  # type: ignore[arg-type]
-                            yes_ask=prices["yes_ask"],  # type: ignore[arg-type]
-                            last_trade=prices["last_trade"],  # type: ignore[arg-type]
-                            volume=prices["volume"],  # type: ignore[arg-type]
-                            depth_yes=depth_yes,
-                            depth_no=depth_no,
-                            imbalance=imbalance,
-                            status=str(prices["status"]),
-                        )
-                        if self.engine.snap.connection_status != ConnectionStatus.CONNECTED:
-                            self.engine.snap.connection_status = ConnectionStatus.CONNECTED
-                    except Exception as exc:
-                        logger.debug("Poll %s failed: %s", ticker, exc)
-                    await asyncio.sleep(0.05)  # gentle rate limit
+                await self._bulk_refresh_quotes()
+                book_cursor = await self._refresh_orderbooks(book_cursor)
+                if self.engine.snap.matches and self.engine.snap.connection_status != ConnectionStatus.CONNECTED:
+                    # REST is delivering live quotes even if the authenticated WS is down
+                    self.engine.snap.connection_status = ConnectionStatus.CONNECTED
             except Exception as exc:
                 logger.error("Poll loop error: %s", exc)
             try:
@@ -352,6 +316,86 @@ class MarketOrchestrator:
                 )
             except asyncio.TimeoutError:
                 pass
+
+    async def _bulk_refresh_quotes(self) -> None:
+        """One list call per series updates every tracked market's bid/ask."""
+        if not self.engine.snap.matches:
+            return
+        for series in ("KXWTAMATCH", "KXATPMATCH"):
+            try:
+                data = await self.client.get_markets(status="open", series_ticker=series, limit=200)
+            except Exception as exc:
+                logger.debug("Bulk refresh %s failed: %s", series, exc)
+                continue
+            for m in data.get("markets", []):
+                ticker = m.get("ticker")
+                if not ticker or ticker not in self.engine.snap.matches:
+                    continue
+                prices = extract_market_prices(m)
+                await self.engine.on_market_update(
+                    ticker,
+                    yes_bid=prices["yes_bid"],  # type: ignore[arg-type]
+                    yes_ask=prices["yes_ask"],  # type: ignore[arg-type]
+                    last_trade=prices["last_trade"],  # type: ignore[arg-type]
+                    volume=prices["volume"],  # type: ignore[arg-type]
+                    status=str(prices["status"]),
+                )
+
+    async def _refresh_orderbooks(self, cursor: int) -> int:
+        tickers = list(self.engine.snap.matches.keys())
+        if not tickers:
+            return 0
+        batch = tickers[cursor : cursor + 8]
+        nxt = (cursor + 8) % max(len(tickers), 1)
+        for ticker in batch:
+            try:
+                ob_raw = await self.client.get_orderbook(ticker, depth=5)
+                ob = ob_raw.get("orderbook_fp") or ob_raw.get("orderbook") or ob_raw
+                yes_levels = ob.get("yes_dollars") or ob.get("yes") or []
+                no_levels = ob.get("no_dollars") or ob.get("no") or []
+                depth_yes = depth_no = imbalance = None
+                best_yes = best_no = None
+
+                def _levels(levels: list) -> tuple[float, float | None]:
+                    total = 0.0
+                    best = None
+                    for level in levels:
+                        price = size = None
+                        if isinstance(level, (list, tuple)) and len(level) >= 2:
+                            price, size = float(level[0]), float(level[1])
+                        elif isinstance(level, dict):
+                            price = float(level.get("price") or 0)
+                            size = float(level.get("size") or level.get("quantity") or 0)
+                        if size:
+                            total += size
+                        if price is not None and (best is None or price > best):
+                            best = price
+                    return total, best
+
+                if yes_levels or no_levels:
+                    depth_yes, best_yes = _levels(yes_levels)
+                    depth_no, best_no = _levels(no_levels)
+                    total = (depth_yes or 0) + (depth_no or 0)
+                    imbalance = ((depth_yes - depth_no) / total) if total else 0.0
+                # Book prices are dollars (0-1) or cents. Normalize.
+                yes_bid = _price_to_cents(best_yes) if best_yes is not None else None
+                yes_ask = None
+                if best_no is not None:
+                    no_cents = _price_to_cents(best_no)
+                    if no_cents is not None:
+                        yes_ask = round(100.0 - no_cents, 2)
+                await self.engine.on_market_update(
+                    ticker,
+                    yes_bid=yes_bid,
+                    yes_ask=yes_ask,
+                    depth_yes=depth_yes,
+                    depth_no=depth_no,
+                    imbalance=imbalance,
+                )
+            except Exception as exc:
+                logger.debug("Orderbook %s failed: %s", ticker, exc)
+            await asyncio.sleep(0.05)
+        return nxt
 
     async def _expiry_loop(self) -> None:
         interval = self.settings.signal_timer_refresh_ms / 1000.0
