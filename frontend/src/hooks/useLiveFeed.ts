@@ -35,7 +35,7 @@ export function useLiveFeed() {
   const clockRef = useRef(new ClockSynchronizer());
   const wsRef = useRef<WebSocket | null>(null);
   const boardSaveAt = useRef(0);
-  const lastMessageAt = useRef(Date.now());
+  const lastBoardAt = useRef(0);
   const [serverNow, setServerNow] = useState(() => Date.now());
 
   const rememberBoard = useCallback((payload: DashboardPayload, force = false) => {
@@ -87,6 +87,7 @@ export function useLiveFeed() {
         clockRef.current.lastSyncAt = recv;
         setServerNow(clockRef.current.serverNow());
       }
+      lastBoardAt.current = Date.now();
       const incoming = payload.actionable_signals || [];
       const snapshotAt = payload.server_time_ms || 0;
       setSignals((prev) => {
@@ -137,7 +138,9 @@ export function useLiveFeed() {
         try {
           const msg = JSON.parse(ev.data);
           const recv = Date.now();
-          lastMessageAt.current = recv;
+          if (msg.type === "dashboard" || msg.type === "signal") {
+            lastBoardAt.current = recv;
+          }
           if (msg.type === "clock_sync" || msg.type === "pong") {
             const p = msg.payload;
             clockRef.current.recordSync(
@@ -216,22 +219,23 @@ export function useLiveFeed() {
     return () => clearInterval(id);
   }, []);
 
-  // Refresh match state about once a second. The countdown itself does not
-  // wait on this — it runs from observation_ends_ms and serverNow.
+  // The socket pushes each new alert. Asking it for the full board every few
+  // seconds stalled that push, so the cards and the sound froze until refresh.
+  // If no alert or board arrives, fetch the board over HTTP instead.
   useEffect(() => {
-    const id = setInterval(() => {
-      const ws = wsRef.current;
-      const quiet = Date.now() - lastMessageAt.current > 8000;
-      if (!quiet && ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(
-          JSON.stringify({ type: "get_dashboard", client_send_ms: Date.now() })
-        );
-        return;
-      }
+    const pull = () => {
       fetch(`${API_URL}/api/dashboard`)
         .then((r) => r.json())
-        .then((d: DashboardPayload) => applyDashboard(d))
+        .then((d: DashboardPayload) => {
+          lastBoardAt.current = Date.now();
+          applyDashboard(d);
+        })
         .catch(() => undefined);
+    };
+    const id = setInterval(() => {
+      const ws = wsRef.current;
+      const stale = Date.now() - lastBoardAt.current > 6000;
+      if (stale || !ws || ws.readyState !== WebSocket.OPEN) pull();
     }, 3000);
     return () => clearInterval(id);
   }, [applyDashboard]);
@@ -245,14 +249,12 @@ export function useLiveFeed() {
       }
       if (document.visibilityState !== "visible") return;
       setServerNow(clockRef.current.serverNow());
-      const ws = wsRef.current;
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: "get_dashboard", client_send_ms: Date.now() }));
-        return;
-      }
       fetch(`${API_URL}/api/dashboard`)
         .then((r) => r.json())
-        .then((d: DashboardPayload) => applyDashboard(d))
+        .then((d: DashboardPayload) => {
+          lastBoardAt.current = Date.now();
+          applyDashboard(d);
+        })
         .catch(() => undefined);
     };
     document.addEventListener("visibilitychange", onVis);

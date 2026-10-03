@@ -399,18 +399,21 @@ class MarketOrchestrator:
 
     async def _expiry_loop(self) -> None:
         interval = self.settings.signal_timer_refresh_ms / 1000.0
+        last_beat = 0.0
         while not self._stop.is_set():
             try:
                 expired = self.engine.tick_expirations()
                 for sig in expired:
                     await self.engine._emit_signal_update(sig)
-                # Broadcast dashboard heartbeat with server time
-                if self.engine.broadcast:
+                # A heartbeat every tenth of a second crowded out the alert frames.
+                now = time.time()
+                if self.engine.broadcast and now - last_beat >= 1.0:
+                    last_beat = now
                     await self.engine.broadcast(
                         {
                             "type": "heartbeat",
                             "payload": {
-                                "server_time_ms": time.time() * 1000.0,
+                                "server_time_ms": now * 1000.0,
                                 "connection_status": self.engine.snap.connection_status.value,
                             },
                         }

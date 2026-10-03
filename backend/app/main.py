@@ -76,18 +76,14 @@ async def websocket_endpoint(ws: WebSocket) -> None:
     # Connection status first, then the board. A refresh should not sit on
     # DISCONNECTED while the match list is serialized.
     if engine:
-        await ws.send_json(
+        await hub.send(
+            ws,
             {
                 "type": "connection",
                 "payload": {"status": engine.snap.connection_status.value},
-            }
+            },
         )
-        await ws.send_json(
-            {
-                "type": "dashboard",
-                "payload": engine.dashboard_payload(),
-            }
-        )
+        await hub.send(ws, {"type": "dashboard", "payload": engine.dashboard_payload()})
     await hub.send_clock_sync(ws, time.time() * 1000.0)
     try:
         while True:
@@ -96,23 +92,25 @@ async def websocket_endpoint(ws: WebSocket) -> None:
             if msg_type == "ping":
                 client_send = data.get("client_send_ms") or time.time() * 1000.0
                 await hub.send_clock_sync(ws, client_send)
-                await ws.send_json(
+                await hub.send(
+                    ws,
                     {
                         "type": "pong",
                         "payload": {
                             "server_time_ms": time.time() * 1000.0,
                             "client_send_ms": client_send,
                         },
-                    }
+                    },
                 )
             elif msg_type == "clock_sync":
                 await hub.send_clock_sync(ws, data.get("client_send_ms") or time.time() * 1000.0)
             elif msg_type == "get_dashboard":
                 if engine:
-                    await ws.send_json({"type": "dashboard", "payload": engine.dashboard_payload()})
+                    await hub.send(ws, {"type": "dashboard", "payload": engine.dashboard_payload()})
     except WebSocketDisconnect:
         await hub.disconnect(ws)
     except Exception:
+        logger.exception("Client websocket closed")
         await hub.disconnect(ws)
 
 
