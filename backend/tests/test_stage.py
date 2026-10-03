@@ -94,19 +94,20 @@ async def test_engine_does_not_suggest_outside_the_early_window():
 
 
 @pytest.mark.asyncio
-async def test_a_discovered_pattern_is_suggested_in_the_early_window():
+async def test_an_early_pattern_is_the_bet_after_two_serves():
+    """Two serves are the study. The pattern picked after that is the bet."""
     engine = _engine()
-    fresh = _engine()
     path = (60, 59, 58, 57, 57.4, 58)
-    await _play(fresh, path)
-    assert fresh.dashboard_payload()["actionable_signals"] == []
-
-    seed_pullback(engine.pattern_engine, "KXTEST", time.time() * 1000, 56, 53, 60, vol=1)
     ctx = engine.snap.matches["KXTEST"]
     ctx.tennis = _score(match_score="1-0", game_score="5-4", point_score="15-0")
     engine.note_serves(ctx)
     ctx.tennis = _score(match_score="1-0", game_score="5-4", point_score="30-0")
     engine.note_serves(ctx)
+    assert ctx.serves_seen == 1
+    await _play(engine, path)
+    assert engine.dashboard_payload()["actionable_signals"] == []
+    assert "two serves" in engine.dashboard_payload()["matches"][0]["hold_reason"]
+
     ctx.tennis = _score(match_score="1-0", game_score="5-4", point_score="30-15")
     engine.note_serves(ctx)
     assert ctx.serves_seen == 2
@@ -117,10 +118,13 @@ async def test_a_discovered_pattern_is_suggested_in_the_early_window():
         "PATTERN_ENTRY_SIGNAL",
         "STRONG_PATTERN_SIGNAL",
     )
-    assert payload["actionable_signals"][0]["signal_type"] in (
+    signal = payload["actionable_signals"][0]
+    assert signal["signal_type"] in (
         SignalType.PATTERN_ENTRY_SIGNAL.value,
         SignalType.STRONG_PATTERN_SIGNAL.value,
     )
+    assert signal["pattern_reasons"]
+    assert any("pattern to bet" in reason.lower() for reason in signal["pattern_reasons"])
 
 
 def test_a_pattern_waits_for_every_two_serves():

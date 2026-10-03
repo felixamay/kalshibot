@@ -84,15 +84,24 @@ export function PrimarySignalCard({
             </p>
           )}
           {signal.pattern_name && (
-            <p className="mt-2 font-mono text-xs uppercase tracking-widest text-mist/70">
-              {signal.pattern_name}
-              {signal.pattern_similarity != null
-                ? ` · similarity ${Math.round(signal.pattern_similarity)}%`
-                : ""}
-              {signal.pattern_confidence != null
-                ? ` · confidence ${Math.round(signal.pattern_confidence)}`
-                : ""}
-            </p>
+            <div className="mt-2">
+              <p className="font-mono text-xs uppercase tracking-widest text-mist/70">
+                {signal.pattern_name}
+                {signal.pattern_similarity != null
+                  ? ` · similarity ${Math.round(signal.pattern_similarity)}%`
+                  : ""}
+                {signal.pattern_confidence != null
+                  ? ` · confidence ${Math.round(signal.pattern_confidence)}`
+                  : ""}
+              </p>
+              {(signal.pattern_reasons || []).length > 0 && (
+                <ul className="mt-2 space-y-1 text-sm normal-case tracking-normal text-mist/80">
+                  {signal.pattern_reasons.slice(0, 6).map((reason) => (
+                    <li key={reason}>{reason}</li>
+                  ))}
+                </ul>
+              )}
+            </div>
           )}
         </div>
         <div className="text-right font-mono text-xs text-mist/60">

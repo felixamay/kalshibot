@@ -105,7 +105,6 @@ export function LiveReadCard({
           {match.read.dynamic_min_edge != null
             ? `${(match.read.dynamic_min_edge * 100).toFixed(1)}%`
             : "—"}{" "}
-          · confirmation {match.read.confirmation_needed ?? 3} needed
         </p>
       )}
 
@@ -136,9 +135,9 @@ export function LiveReadCard({
         </ul>
       )}
       <p className="mt-3 font-mono text-[11px] uppercase tracking-wider text-mist/40">
-        A pattern is made only after every two serves, and only after it has been discovered
-        on a live match, past the first serve, while the game is still at or under 85%. The last 5 serves are skipped
-        when the winner is clear. You bet that player yourself on Kalshi.
+        A pattern is studied after every two serves, then one pattern is picked to bet.
+        The game still has to be live and at or under 85%. The last 5 serves are skipped
+        when the winner is clear. You place that bet yourself on Kalshi.
       </p>
     </section>
   );

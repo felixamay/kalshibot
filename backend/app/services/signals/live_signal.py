@@ -56,6 +56,7 @@ class LiveSignal:
     pattern_stage: str = ""
     bet_instruction: str = ""
     market_instruction: str = ""
+    pattern_reasons: list[str] = field(default_factory=list)
     lifecycle: list[dict[str, Any]] = field(default_factory=list)
 
     def remaining_ms(self, server_now_ms: float | None = None) -> float:
@@ -192,6 +193,7 @@ class LiveSignal:
             "pattern_stage": self.pattern_stage,
             "bet_instruction": self.bet_instruction,
             "market_instruction": self.market_instruction,
+            "pattern_reasons": self.pattern_reasons,
             "lifecycle": self.lifecycle[-20:],
             # Never leave BET NOW visible when not actionable
             "display_label": _display_label(self, actionable, now),

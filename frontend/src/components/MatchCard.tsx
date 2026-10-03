@@ -224,39 +224,25 @@ function PatternStatus({
           label="Seen"
           value={`${pattern.occurrences ?? 0} / ${pattern.successes ?? 0} continued`}
         />
-        <Stat
-          label="Confirm"
-          value={`${pattern.confirmation_count ?? 0}/${pattern.confirmation_needed ?? 3}`}
-        />
       </div>
       {pattern.low_sample_size && (
         <p className="mt-2 font-mono text-[10px] uppercase tracking-wider text-signal-amber">
           Low sample size · observed success is not a future probability
         </p>
       )}
-      <details className="mt-3">
-        <summary className="cursor-pointer font-mono text-[11px] uppercase tracking-wider text-mist/70">
-          Why this pattern?
-        </summary>
-        <div className="mt-2 space-y-1 text-xs text-mist/75">
-          <p>
-            Previous occurrences {pattern.occurrences ?? 0}. Successful continuations{" "}
-            {pattern.successes ?? 0}. Failures {pattern.failures ?? 0}.
-          </p>
-          <p>
-            Typical pullback {pattern.typical_pullback ?? "—"}¢ · typical continuation{" "}
-            {pattern.typical_recovery ?? "—"}¢ · current move {pattern.current_move ?? "—"}¢.
-          </p>
-          <p>Similarity {pattern.similarity ?? "—"}%. {pattern.cluster_name}</p>
-          <p>
-            Order book: {(pattern.orderbook_evidence || []).join(", ") || "No standalone book pattern."}
-          </p>
-          <p>{pattern.success_note}</p>
-          {(pattern.reasons || []).slice(0, 4).map((reason) => (
-            <p key={reason}>{reason}</p>
-          ))}
-        </div>
-      </details>
+      <div className="mt-3 space-y-1 text-xs text-mist/75">
+        <p className="font-mono text-[11px] uppercase tracking-wider text-mist/70">
+          Current pattern
+        </p>
+        {(pattern.reasons || []).slice(0, 6).map((reason) => (
+          <p key={reason}>{reason}</p>
+        ))}
+        <p>
+          Typical pullback {pattern.typical_pullback ?? "—"}¢ · typical continuation{" "}
+          {pattern.typical_recovery ?? "—"}¢ · current move {pattern.current_move ?? "—"}¢.
+        </p>
+        {pattern.cluster_name ? <p>{pattern.cluster_name}</p> : null}
+      </div>
     </div>
   );
 }

@@ -46,6 +46,7 @@ export interface LiveSignal {
   pattern_stage?: string;
   bet_instruction?: string;
   market_instruction?: string;
+  pattern_reasons?: string[];
   lifecycle?: Array<Record<string, unknown>>;
 }
 

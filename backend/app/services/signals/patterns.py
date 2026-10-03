@@ -1,7 +1,8 @@
 """Match-specific pattern learning.
 
-Raw prices become structures this match has already shown. A detected pattern
-is not a bet. Entry still needs repetition, confirmation, and a tradable book.
+Raw prices become a structure this match is showing. After the two-serve study,
+one early pattern is picked to bet. Its reasons belong to that pattern.
+A late move, a failed breakout, or a bad book is not a bet.
 Nothing in this module places an order.
 """
 
@@ -685,7 +686,8 @@ class PatternEngine:
             tennis_type,
             book,
         )
-        needed = settings.pattern_confirmation_count
+        # Pattern bets do not wait for a confirmation count.
+        needed = 0
         if setup is None:
             return PatternAssessment(
                 decision="SEARCHING",
@@ -750,17 +752,8 @@ class PatternEngine:
         confidence = self._weighted_confidence(parts)
         entry_score = self._weighted_entry(parts, confidence)
         signals = self._confirmation_signals(setup, book, momentum, points)
-        confirming = (
-            len(signals) >= 3
-            and stage in ("EARLY", "DEVELOPING", "MATURE")
-            and pattern_type not in ORDERBOOK_ONLY
-            and pattern_type != "FAILED_BREAKOUT"
-            and label in ("POTENTIAL", "RECURRING")
-            and book.fresh
-            and not book.extreme
-            and book.liquidity_quality not in ("LOW", "VERY_LOW")
-            and book.spread_quality not in ("POOR", "VERY_POOR")
-        )
+        # These reads explain the current pattern. They are not a 3-step gate.
+        confirming = False
         zone_low = round(book.price - 1.0, 2)
         zone_high = round(book.price + 1.0, 2)
         maximum = round(book.price + settings.max_entry_slippage_cents, 2)
@@ -811,7 +804,7 @@ class PatternEngine:
             maximum=maximum,
             price=book.price,
             blockers=blockers,
-            reasons=reasons,
+            reasons=reasons + signals,
             bet_headline=headline,
             bet_detail=detail,
             already_discovered=prior_counts.get(pattern_type, 0) >= 1,
@@ -1651,13 +1644,12 @@ class PatternEngine:
         if book.spread_quality in ("POOR", "VERY_POOR"):
             blockers.append("Spread is not acceptable")
         if book.liquidity_quality in ("LOW", "VERY_LOW") and not depth_unknown:
-            reasons.append("Depth is thin. The developing pattern is still the alert.")
-        # Alert only after this match has already produced the pattern once.
-        if market_ok and stage in ("EARLY", "DEVELOPING", "MATURE") and not discovered:
-            reasons.append("Pattern is forming. No bet until it has been discovered in this live match.")
-            return "PATTERN_DEVELOPING", False, blockers, reasons
+            reasons.append("Depth is thin. The pattern is still the bet.")
+        if discovered:
+            reasons.append("This pattern has already shown up in this match.")
+        # The two-serve study happens before this assessment. Pick the pattern now.
         if market_ok and stage in ("EARLY", "DEVELOPING", "MATURE"):
-            reasons.append("Pattern discovered. Bet this side now.")
+            reasons.append("This is the pattern to bet.")
             if (
                 entry_score >= settings.strong_pattern_entry_score
                 and confidence >= settings.strong_pattern_confidence
@@ -1677,13 +1669,15 @@ class PatternEngine:
         rate = kwargs["success_rate"]
         rate_text = "n/a" if rate is None else f"{rate * 100:.0f}% observed"
         sample = " LOW SAMPLE SIZE." if kwargs["low_sample"] else ""
+        reason_text = " ".join(str(item) for item in (kwargs.get("reasons") or []) if item)
         base = (
-            f"{name}. Similarity {kwargs['similarity']:.0f}%. "
+            f"{name}. "
+            + (f"{reason_text} " if reason_text else "")
+            + f"Similarity {kwargs['similarity']:.0f}%. "
             f"Pattern confidence {kwargs['confidence']:.0f}. Entry score {kwargs['entry_score']:.0f}. "
             f"Stage {kwargs['stage']}. Progress {kwargs['progress']:.0f}%. "
             f"Repetition {kwargs['label']}. Previous occurrences {kwargs['occurrences']}. "
             f"Successful continuations {kwargs['successes']}. Observed success {rate_text}.{sample} "
-            f"Confirmation {kwargs['confirmation_count']}/{kwargs['needed']}. "
             f"Possible entry zone {kwargs['zone_low']:.0f}¢–{kwargs['zone_high']:.0f}¢. "
             f"Maximum entry {kwargs['maximum']:.0f}¢. Current {kwargs['price']:.0f}¢. "
             "Observed success is not a guaranteed future probability."
@@ -1699,12 +1693,7 @@ class PatternEngine:
         if decision == "FAILED_BREAKOUT":
             return "FAILED BREAKOUT. NO ENTRY. Price crossed resistance and fell back."
         if decision == "PATTERN_DEVELOPING":
-            if not kwargs.get("already_discovered"):
-                return (
-                    "PATTERN DISCOVERING. No bet until this pattern has been seen in this live match. "
-                    + base
-                )
-            return "PATTERN DEVELOPING. " + base + " Waiting for confirmation."
+            return "PATTERN DEVELOPING. " + base
         return base
 
     def _cluster_name(self, pattern_type: str, setup: dict[str, Any], vol: float) -> str:

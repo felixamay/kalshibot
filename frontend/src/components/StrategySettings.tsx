@@ -72,7 +72,7 @@ const FIELDS: Array<{ key: string; label: string; tip: string; step: string }> =
   {
     key: "pattern_entry_score",
     label: "Pattern entry score",
-    tip: "Minimum pattern entry score. Still needs confirmation, a fresh book, and a pattern that has repeated.",
+    tip: "Minimum pattern entry score. A fresh book still applies. Confirmations are not required.",
     step: "1",
   },
   {
@@ -90,7 +90,7 @@ const FIELDS: Array<{ key: string; label: string; tip: string; step: string }> =
   {
     key: "pattern_confirmation_count",
     label: "Pattern confirmations",
-    tip: "A pattern that exists and is about to begin alerts without waiting for this count.",
+    tip: "Not used before a bet. A pattern is picked after every two serves.",
     step: "1",
   },
   {

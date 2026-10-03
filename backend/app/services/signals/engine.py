@@ -350,8 +350,7 @@ class SignalEngine:
                 await self._emit_signal_update(active)
             ctx.display_state = SignalType.STUDYING_MATCH
             ctx.hold_reason = (
-                "This game is not live. A bet is suggested only after the match starts "
-                "and a pattern has been discovered."
+                "This game is not live. A bet is suggested only after the match starts."
             )
             return
 
@@ -1246,6 +1245,7 @@ class SignalEngine:
             pattern_stage=pattern.stage if pattern else "",
             bet_instruction=bet_instruction,
             market_instruction=market_instruction,
+            pattern_reasons=list(pattern.reasons) if pattern else [],
             lifecycle=[
                 {
                     "event_type": "created",

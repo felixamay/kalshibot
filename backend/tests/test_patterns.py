@@ -195,7 +195,7 @@ async def test_a_match_that_has_not_started_is_not_a_bet():
 
 
 def test_a_pattern_about_to_begin_alerts_without_three_confirmations():
-    """One existing early pattern is the alert. Three confirmations are not required."""
+    """An early pattern is the bet. Three confirmations are not required."""
     engine = PatternEngine(settings())
     seed_pullback(engine, "KX", 1_000, 52, 49, 55, vol=1)
     once = engine.assess(
@@ -210,6 +210,10 @@ def test_a_pattern_about_to_begin_alerts_without_three_confirmations():
     assert once.stage in ("EARLY", "DEVELOPING")
     assert once.decision == "PATTERN_ENTRY_SIGNAL", once.explanation
     assert once.tradeable is True
+    assert once.confirmation_needed == 0
+    assert once.reasons
+    assert "this is the pattern to bet" in once.explanation.lower()
+    assert "confirmation" not in once.explanation.lower()
 
     fresh = PatternEngine(settings())
     forming = fresh.assess(
@@ -221,32 +225,10 @@ def test_a_pattern_about_to_begin_alerts_without_three_confirmations():
         player_a="Player A",
     )
     assert forming.pattern_type == "PULLBACK_RECOVERY"
-    assert forming.decision == "PATTERN_DEVELOPING", forming.explanation
-    assert forming.tradeable is False
-    assert "discovered" in forming.explanation.lower() or "discovering" in forming.explanation.lower()
-
-    # The pass that first records the pattern is discovery. The bet waits for a later one.
-    first = fresh.assess(
-        ticker="NEW",
-        points=[make_point(i * 1000, price) for i, price in enumerate([60, 58, 55, 57, 60, 59, 58.2])],
-        book=early_book(58.2),
-        confirmation_count=0,
-        baseline_volatility_override=1,
-        player_a="Player A",
-    )
-    assert first.tradeable is False
-    remembered = [item for item in fresh.match_memory["NEW"] if item.pattern_type == first.pattern_type or item.pattern_type == "PULLBACK_RECOVERY"]
-    later = fresh.assess(
-        ticker="NEW",
-        points=developing_pullback(),
-        book=early_book(58),
-        confirmation_count=0,
-        baseline_volatility_override=1,
-        player_a="Player A",
-    )
-    if remembered:
-        assert later.decision == "PATTERN_ENTRY_SIGNAL", later.explanation
-        assert later.tradeable is True
+    assert forming.decision == "PATTERN_ENTRY_SIGNAL", forming.explanation
+    assert forming.tradeable is True
+    assert forming.reasons
+    assert "confirmation" not in forming.explanation.lower()
 
 
 def test_zero_printed_depth_still_alerts_an_early_pattern():

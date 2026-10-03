@@ -49,9 +49,9 @@ class Settings(BaseSettings):
     # Observation & signal strategy
     # Confidence is signal confidence, not the player's win probability.
     # The 5-minute clock is abolished. This value is not a wait before a bet.
-    # A pattern is suggested only after it has been discovered on a live match,
-    # after the first serve, while the game is still at or under 85%, and not
-    # in the last five serves when the winner is clear.
+    # A pattern is studied after every two serves, then one pattern is picked
+    # to bet. Confirmations are not required. The game still has to be live,
+    # at or under 85%, and not in the last five serves when the winner is clear.
     initial_observation_seconds: int = Field(
         default=0,
         validation_alias=AliasChoices(
