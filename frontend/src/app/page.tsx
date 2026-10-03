@@ -274,6 +274,18 @@ export default function HomePage() {
             onPlaced={setPlaceSignal}
             onViewAnalysis={setAnalysisSignal}
           />
+        ) : rankedMatches.length > 0 ? (
+          <div className="border border-dashed border-white/15 p-5 font-mono text-sm text-mist/60">
+            {rankedMatches[0].player_a} vs {rankedMatches[0].player_b} is live
+            {rankedMatches[0].tennis && typeof rankedMatches[0].tennis.set_score === "string"
+              ? ` (${rankedMatches[0].tennis.set_score})`
+              : ""}
+            . No bet yet. {rankedMatches[0].hold_reason}
+          </div>
+        ) : dashboard == null ? (
+          <div className="border border-dashed border-white/15 p-5 font-mono text-sm text-mist/60">
+            Checking live matches…
+          </div>
         ) : (
           <div className="border border-dashed border-white/15 p-5 font-mono text-sm text-mist/60">
             No live game needs a bet right now. When one is ready, this section shows that single bet and moves to the next every 10 seconds.

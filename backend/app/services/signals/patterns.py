@@ -1193,13 +1193,17 @@ class PatternEngine:
     ) -> Optional[dict[str, Any]]:
         if len(points) < 4:
             return None
-        failed = self._failed_breakout(points, resistances, threshold)
-        if failed:
-            return self._setup_dict(points, "FAILED_BREAKOUT", points[0], points[len(points) // 2], points[-1], vol)
         breakout = self._breakout(points, resistances, threshold)
         if breakout:
             return breakout
+        # A dip back through a recent high is not the whole story when price
+        # has started to recover. That recovery is the pattern to bet.
         pullback = self._open_pullback(points, swings, threshold, vol)
+        if pullback and pullback.get("recovery", 0) >= max(0.4, threshold * 0.2):
+            return pullback
+        failed = self._failed_breakout(points, resistances, threshold)
+        if failed:
+            return self._setup_dict(points, "FAILED_BREAKOUT", points[0], points[len(points) // 2], points[-1], vol)
         if pullback:
             return pullback
         bounce = self._zone_touch(points, supports, "SUPPORT_BOUNCE", book, bid_side=True)
@@ -1649,10 +1653,10 @@ class PatternEngine:
         if book.liquidity_quality in ("LOW", "VERY_LOW") and not depth_unknown:
             reasons.append("Depth is thin. The developing pattern is still the alert.")
         # Alert only after this match has already produced the pattern once.
-        if market_ok and stage in ("EARLY", "DEVELOPING") and not discovered:
+        if market_ok and stage in ("EARLY", "DEVELOPING", "MATURE") and not discovered:
             reasons.append("Pattern is forming. No bet until it has been discovered in this live match.")
             return "PATTERN_DEVELOPING", False, blockers, reasons
-        if market_ok and stage in ("EARLY", "DEVELOPING"):
+        if market_ok and stage in ("EARLY", "DEVELOPING", "MATURE"):
             reasons.append("Pattern discovered. Bet this side now.")
             if (
                 entry_score >= settings.strong_pattern_entry_score

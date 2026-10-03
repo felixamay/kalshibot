@@ -385,6 +385,18 @@ def test_pullback_recovery_breakout_and_failed_breakout():
     assert failed.decision == "FAILED_BREAKOUT"
     assert failed.tradeable is False
 
+    # The same break that then bounces is a pullback, not a dead breakout.
+    bounced_prices = [50, 60, 54, 60, 55, 60, 54, 63, 57, 59]
+    bounced = engine.assess(
+        ticker="BOUNCE",
+        points=[make_point(i * 1000, price) for i, price in enumerate(bounced_prices)],
+        book=early_book(59),
+        confirmation_count=0,
+        baseline_volatility_override=1,
+        player_a="Player A",
+    )
+    assert bounced.pattern_type == "PULLBACK_RECOVERY", bounced.explanation
+
 
 def test_order_book_pattern_cannot_open_an_entry():
     engine = PatternEngine(settings())
