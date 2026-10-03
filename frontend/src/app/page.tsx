@@ -223,7 +223,7 @@ export default function HomePage() {
                   Register
                 </button>
               </>
-            )}
+            ) : null}
           </div>
         </div>
       </header>
