@@ -128,6 +128,8 @@ class MatchContext:
     slip_confirmation: int = 0
     last_pattern: Optional[PatternAssessment] = None
     last_pattern_health: Optional[PatternHealthView] = None
+    pattern_assessed_ms: float = 0.0
+    pattern_cache_key: tuple = ()
     phase_events: list[dict[str, Any]] = field(default_factory=list)
 
 
@@ -418,9 +420,17 @@ class SignalEngine:
     def _pattern_points(self, ctx: MatchContext) -> list:
         analyzer = self.snap.analyzers.get(ctx.market_ticker)
         ticks = analyzer.ticks_since(ctx.observation_started_ms) if analyzer else []
+        # Keep the recent path. Older completed patterns already sit in match memory.
+        if len(ticks) > 400:
+            ticks = ticks[-400:]
         return series_from_ticks(ticks)
 
     def _assess_pattern(self, ctx: MatchContext, market: MarketState, now: float) -> PatternAssessment:
+        analyzer = self.snap.analyzers.get(ctx.market_ticker)
+        tick_count = len(analyzer.ticks_since(ctx.observation_started_ms)) if analyzer else 0
+        cache_key = (tick_count, round(market.mid, 2), ctx.confirmation_count, round(market.imbalance, 2))
+        if ctx.last_pattern is not None and ctx.pattern_cache_key == cache_key:
+            return ctx.last_pattern
         edge = 0.0
         if ctx.last_read is not None:
             edge = ctx.last_read.uncertainty_adjusted_edge
@@ -431,7 +441,7 @@ class SignalEngine:
         if window and (window.volatility or 0) > self.settings.extreme_volatility:
             book.extreme = True
         baseline = ctx.baseline.normal_volatility if ctx.baseline else None
-        return self.pattern_engine.assess(
+        view = self.pattern_engine.assess(
             ticker=ctx.market_ticker,
             points=self._pattern_points(ctx),
             book=book,
@@ -443,6 +453,9 @@ class SignalEngine:
             baseline_volatility_override=baseline,
             now_ms=now,
         )
+        ctx.pattern_assessed_ms = now
+        ctx.pattern_cache_key = cache_key
+        return view
 
     async def _evaluate_entry(self, ctx: MatchContext, market: MarketState, now: float) -> None:
         ticker = ctx.market_ticker
