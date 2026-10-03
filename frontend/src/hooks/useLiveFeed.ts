@@ -38,10 +38,11 @@ function forgetBoard() {
 export function useLiveFeed() {
   const [dashboard, setDashboard] = useState<DashboardPayload | null>(null);
   const [signals, setSignals] = useState<Record<string, LiveSignal>>({});
-  // A refresh used to paint DISCONNECTED until the full board downloaded.
+  // A refresh paints this static page before the live check. RECONNECTING here
+  // turned the Kalshi light off on every reload.
   const [connection, setConnection] = useState<
     "CONNECTED" | "RECONNECTING" | "DISCONNECTED"
-  >("RECONNECTING");
+  >("CONNECTED");
   const [wsState, setWsState] = useState<
     "CONNECTED" | "RECONNECTING" | "DISCONNECTED"
   >("RECONNECTING");
@@ -70,6 +71,7 @@ export function useLiveFeed() {
     setDashboard(null);
     setSignals({});
     setFeedDown(true);
+    setConnection("RECONNECTING");
     forgetBoard();
   }, []);
 
@@ -219,7 +221,9 @@ export function useLiveFeed() {
       .then((health: { connection_status?: DashboardPayload["connection_status"] }) => {
         if (!stopped && health.connection_status) setConnection(health.connection_status);
       })
-      .catch(() => undefined);
+      .catch(() => {
+        if (!stopped && lastGoodAt.current === 0) setConnection("RECONNECTING");
+      });
 
     loadJson("/api/dashboard")
       .then((d: DashboardPayload) => {
