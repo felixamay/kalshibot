@@ -35,6 +35,7 @@ export function PrimarySignalCard({
   );
 
   const showActionable = active && !cd.expired;
+  const secondsLeft = Math.max(0, Math.ceil(cd.remainingMs / 1000));
   const marketLine =
     signal.market_instruction ||
     (signal.direction === "NO"
@@ -163,7 +164,7 @@ export function PrimarySignalCard({
                       : "text-signal-lime"
                 }`}
               >
-                {cd.remainingDisplay}
+                {secondsLeft}
               </span>
               <span className="pb-2 font-mono text-lg text-mist/70">SEC</span>
             </div>

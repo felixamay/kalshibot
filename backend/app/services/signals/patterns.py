@@ -78,21 +78,21 @@ def pattern_name(pattern_type: str) -> str:
 
 
 def bet_behind_copy(player: str, side: str, pattern_type: str) -> tuple[str, str]:
-    """Tell the user which side the discovered pattern is for."""
+    """Say which contract to bet, the moment the pattern develops."""
     name = player.strip() or "this player"
-    if pattern_type in {"SERVE_CHANGE", "BREAK_POINT_REACTION"} and side != "NO":
-        return (
-            f"Bet behind {name}",
-            "That is this player's market. You place the bet manually on Kalshi.",
-        )
     if side == "NO":
         return (
-            "Bet behind the market",
-            f"NO on this contract. That is against {name}. You place the bet manually on Kalshi.",
+            f"Bet NO on {name} now",
+            "Bet behind the market. You place the bet manually on Kalshi.",
+        )
+    if pattern_type in {"SERVE_CHANGE", "BREAK_POINT_REACTION"}:
+        return (
+            f"Bet YES on {name} now",
+            "Bet behind this player. You place the bet manually on Kalshi.",
         )
     return (
-        "Bet behind the market",
-        f"YES on this market — {name}. You place the bet manually on Kalshi.",
+        f"Bet YES on {name} now",
+        "Bet behind the market. You place the bet manually on Kalshi.",
     )
 
 
@@ -1628,28 +1628,24 @@ class PatternEngine:
         else:
             reasons.append("I have seen this market behave this way before.")
         reasons.append("The same pattern appears to be forming.")
-        market_ok = (
-            book.fresh
-            and not book.extreme
-            and book.liquidity_quality not in ("LOW", "VERY_LOW")
-            and book.spread_quality not in ("POOR", "VERY_POOR")
-        )
+        depth_unknown = (book.depth_bid + book.depth_ask) <= 0
+        spread_ok = book.spread_quality not in ("POOR", "VERY_POOR")
+        # A live quote with no printed depth is still a market. Do not hide the pattern.
+        market_ok = book.fresh and not book.extreme and spread_ok
         if not book.fresh:
             blockers.append("Market data is stale")
         if book.extreme:
             blockers.append("Volatility is extreme for this match")
-        if book.liquidity_quality in ("LOW", "VERY_LOW"):
-            blockers.append("Liquidity is not acceptable")
         if book.spread_quality in ("POOR", "VERY_POOR"):
             blockers.append("Spread is not acceptable")
-        # A pattern that exists and is still early is the alert. Do not wait for
-        # three confirmations or three historical repeats.
+        if book.liquidity_quality in ("LOW", "VERY_LOW") and not depth_unknown:
+            reasons.append("Depth is thin. The developing pattern is still the alert.")
+        # Alert as soon as the pattern is early. Do not wait for more repetitions.
         if market_ok and stage in ("EARLY", "DEVELOPING"):
-            reasons.append("Pattern exists and is about to begin. Bet behind the player or the market.")
+            reasons.append("Pattern developed. Bet this side now.")
             if (
                 entry_score >= settings.strong_pattern_entry_score
                 and confidence >= settings.strong_pattern_confidence
-                and book.liquidity_quality in ("HIGH", "GOOD")
                 and book.spread_quality in ("EXCELLENT", "GOOD")
             ):
                 return "STRONG_PATTERN_SIGNAL", True, [], reasons

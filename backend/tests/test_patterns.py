@@ -65,14 +65,14 @@ def developing_pullback(start: float = 60, low: float = 57, current: float = 58)
 
 def test_bet_behind_names_the_player_or_the_market():
     market_headline, market_detail = bet_behind_copy("Osaka", "YES", "PULLBACK_RECOVERY")
-    assert market_headline == "Bet behind the market"
-    assert "Osaka" in market_detail
-    assert "YES" in market_detail
-    player_headline, _detail = bet_behind_copy("Osaka", "YES", "SERVE_CHANGE")
-    assert player_headline == "Bet behind Osaka"
+    assert market_headline == "Bet YES on Osaka now"
+    assert "market" in market_detail.lower()
+    player_headline, player_detail = bet_behind_copy("Osaka", "YES", "SERVE_CHANGE")
+    assert player_headline == "Bet YES on Osaka now"
+    assert "player" in player_detail.lower()
     against_headline, against_detail = bet_behind_copy("Osaka", "NO", "REVERSAL")
-    assert against_headline == "Bet behind the market"
-    assert "against Osaka" in against_detail
+    assert against_headline == "Bet NO on Osaka now"
+    assert "market" in against_detail.lower()
 
 
 def test_normalized_move_uses_match_volatility():
@@ -145,6 +145,60 @@ def test_a_pattern_about_to_begin_alerts_without_three_confirmations():
     )
     assert forming.pattern_type == "PULLBACK_RECOVERY"
     assert forming.decision == "PATTERN_ENTRY_SIGNAL", forming.explanation
+
+
+def test_zero_printed_depth_still_alerts_an_early_pattern():
+    """A live quote with no printed size is still a bet. Cerundolo was blocked only by depth 0."""
+    engine = PatternEngine(settings())
+    seed_pullback(engine, "KXATPMATCH-26OCT02CERMEN-CER", 1_000, 52, 49, 55, vol=1)
+    book = BookSnapshot(
+        price=58,
+        spread=1.0,
+        imbalance=0.1,
+        depth_bid=0.0,
+        depth_ask=0.0,
+        momentum=0.4,
+        liquidity_quality="VERY_LOW",
+        spread_quality="EXCELLENT",
+        fresh=True,
+        extreme=False,
+        adjusted_edge=0.02,
+        microprice=58.2,
+    )
+    view = engine.assess(
+        ticker="KXATPMATCH-26OCT02CERMEN-CER",
+        points=developing_pullback(),
+        book=book,
+        confirmation_count=0,
+        baseline_volatility_override=1,
+        player_a="Francisco Cerundolo",
+        player_b="Jakub Mensik",
+    )
+    assert view.stage in ("EARLY", "DEVELOPING")
+    assert view.decision in ("PATTERN_ENTRY_SIGNAL", "STRONG_PATTERN_SIGNAL"), view.explanation
+    assert view.tradeable is True
+    assert not any("Liquidity" in blocker for blocker in view.blockers)
+    assert "Bet YES on Francisco Cerundolo now" in view.explanation
+
+    wide = BookSnapshot(
+        price=58,
+        spread=8.0,
+        depth_bid=0.0,
+        depth_ask=0.0,
+        liquidity_quality="VERY_LOW",
+        spread_quality="VERY_POOR",
+        fresh=True,
+        extreme=False,
+    )
+    blocked = engine.assess(
+        ticker="KXATPMATCH-26OCT02CERMEN-CER",
+        points=developing_pullback(),
+        book=wide,
+        confirmation_count=0,
+        baseline_volatility_override=1,
+        player_a="Francisco Cerundolo",
+    )
+    assert blocked.decision not in ("PATTERN_ENTRY_SIGNAL", "STRONG_PATTERN_SIGNAL")
 
 
 def test_late_and_completed_patterns_do_not_trigger_entry():
@@ -432,6 +486,10 @@ async def test_study_clock_does_not_delay_a_pattern_that_is_about_to_begin():
     assert card["display_state"] in ("PATTERN_ENTRY_SIGNAL", "STRONG_PATTERN_SIGNAL")
     assert payload["actionable_signals"], card["hold_reason"]
     assert payload["actionable_signals"][0]["player"] == "Player A"
-    assert "Bet behind" in (payload["actionable_signals"][0].get("bet_instruction") or "")
+    instruction = payload["actionable_signals"][0].get("bet_instruction") or ""
+    assert "Bet YES" in instruction
+    assert "now" in instruction
     assert "market" in (payload["actionable_signals"][0].get("market_instruction") or "").lower()
     assert "Pullback" in (payload["actionable_signals"][0].get("pattern_name") or "")
+    ttl = payload["actionable_signals"][0].get("original_ttl_ms") or 0
+    assert 12_000 <= ttl <= 15_000

@@ -261,7 +261,7 @@ export default function HomePage() {
           </div>
         ) : (
           <div className="border border-dashed border-white/15 p-5 font-mono text-sm text-mist/60">
-            No match needs a bet right now. When a pattern is discovered, this section says to bet behind the player or the market.
+            No match needs a bet right now. When a pattern develops, this section says to bet YES on that player now, with a seconds countdown.
           </div>
         )}
       </section>

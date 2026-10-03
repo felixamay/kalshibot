@@ -454,6 +454,7 @@ class SignalEngine:
             and interval > 0
             and now - ctx.pattern_assessed_ms < interval
             and ctx.last_pattern.confirmation_count == ctx.confirmation_count
+            and ctx.last_pattern.decision in ("PATTERN_ENTRY_SIGNAL", "STRONG_PATTERN_SIGNAL")
         ):
             return ctx.last_pattern
         edge = 0.0
@@ -1109,8 +1110,13 @@ class SignalEngine:
                 direction,
                 pattern.pattern_type,
             )
+            # A pattern can appear in a fraction of a second. Keep the countdown
+            # long enough to read in whole seconds.
+            ttl_ms = max(ttl.ttl_ms, 12_000)
+            ttl_ms = min(ttl_ms, int(self.settings.max_signal_ttl_seconds * 1000))
         else:
             bet_instruction, market_instruction = "", ""
+            ttl_ms = ttl.ttl_ms
 
         sig = LiveSignal(
             signal_id=signal_id,
@@ -1122,8 +1128,8 @@ class SignalEngine:
             player=named_player,
             direction=direction,
             created_at_ms=now_ms,
-            expires_at_ms=now_ms + ttl.ttl_ms,
-            original_ttl_ms=ttl.ttl_ms,
+            expires_at_ms=now_ms + ttl_ms,
+            original_ttl_ms=ttl_ms,
             market_price=ask,
             target_entry_price=ask,
             maximum_entry_price=max_entry,
