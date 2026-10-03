@@ -60,6 +60,8 @@ class MatchContext:
     display_state: SignalType = SignalType.STUDYING_MATCH
     tennis: Optional[TennisLiveState] = None
     last_model: Optional[ProbabilityResult] = None
+    last_confidence: Optional[float] = None
+    hold_reason: str = "Waiting for the first Kalshi quote."
     chase_blocked_until_ms: float = 0.0
     best_seen_ask: Optional[float] = None  # for anti-chase
 
@@ -180,37 +182,55 @@ class SignalEngine:
         # Connection / stale / market status checks invalidate active signals
         await self._validate_active_signal(ctx, market, now)
 
+        # Always score a quoted market so the dashboard shows a real read
+        # during observation. Scoring never places a bet and never emits BET NOW.
+        if market.yes_bid or market.yes_ask or market.last_trade:
+            self._score_market(ctx, market)
+
         if self.snap.connection_status != ConnectionStatus.CONNECTED:
             ctx.display_state = SignalType.DATA_DELAY
+            ctx.hold_reason = "Live connection is down. No bet on a disconnected feed."
             return
 
         status_u = (market.status or "").upper()
         if status_u in ("CLOSED", "SETTLED"):
             ctx.display_state = SignalType.NO_BET
+            ctx.hold_reason = "Market is closed. No bet."
             return
         if status_u == "SUSPENDED":
             ctx.display_state = SignalType.NO_BET
+            ctx.hold_reason = "Market is suspended. No bet."
             return
 
-        # Observation period — show studying even if a poll batch is slightly behind
+        # Observation period — publish the read, but never a BET NOW.
         if now < ctx.observation_ends_ms:
             ctx.analysis_mode = AnalysisMode.OBSERVING.value
             ctx.display_state = SignalType.STUDYING_MATCH
             ctx.confirmation_count = 0
+            ctx.hold_reason = self._hold_reason(ctx, market, now, observing=True)
             return
 
         if market.data_age_ms > self.settings.max_data_age_ms:
             ctx.display_state = SignalType.DATA_DELAY
+            ctx.hold_reason = (
+                f"Quote is {market.data_age_ms / 1000:.1f}s old. "
+                f"Data older than {self.settings.max_data_age_ms / 1000:.0f}s is not betable."
+            )
             return
 
         # Cooldown after exit
         if now < ctx.cooldown_until_ms:
             ctx.analysis_mode = AnalysisMode.COOLDOWN.value
             ctx.display_state = SignalType.KEEP_WATCHING
+            ctx.hold_reason = "Cooldown after the last manual exit. Full reassessment when it ends."
             return
 
         if ctx.signals_emitted >= self.settings.max_signals_per_match:
             ctx.display_state = SignalType.NO_BET
+            ctx.hold_reason = (
+                f"This match already produced {ctx.signals_emitted} signals. "
+                f"The cap is {self.settings.max_signals_per_match}."
+            )
             return
 
         tennis = ctx.tennis
@@ -221,11 +241,7 @@ class SignalEngine:
         )
 
         # Evaluate YES on player_a (primary market convention)
-        player = market_yes_player(ctx, market)
-        prob = self.prob_model.estimate(
-            player=player, market=market, tennis=tennis, direction="YES"
-        )
-        ctx.last_model = prob
+        prob = ctx.last_model or self._score_market(ctx, market)
 
         # Anti-chase: track best ask when edge first appeared
         ask = market.executable_yes_price()
@@ -238,12 +254,17 @@ class SignalEngine:
             prob,
             confirmation_count=ctx.confirmation_count,
         )
+        ctx.last_confidence = conf.confidence
 
         # Volatility gate
         w5 = market.windows.get(5000)
         if w5 and w5.volatility > 3.5:
             ctx.display_state = SignalType.MATCH_TOO_VOLATILE
             ctx.confirmation_count = 0
+            ctx.hold_reason = (
+                f"5-second volatility is {w5.volatility:.1f}. "
+                "The book is too jumpy to enter."
+            )
             return
 
         # Check conditions for confirmation accumulation
@@ -252,6 +273,11 @@ class SignalEngine:
             ctx.confirmation_count += 1
             if ctx.confirmation_count < self.settings.entry_confirmation_count:
                 ctx.display_state = SignalType.CONDITIONS_IMPROVING
+                ctx.hold_reason = (
+                    f"Gates are open. Confirmation {ctx.confirmation_count}/"
+                    f"{self.settings.entry_confirmation_count}. "
+                    "A single spike is not a BET NOW."
+                )
                 return
         else:
             if ctx.confirmation_count > 0:
@@ -264,6 +290,7 @@ class SignalEngine:
                 else:
                     ctx.display_state = SignalType.KEEP_WATCHING
             ctx.confirmation_count = max(0, ctx.confirmation_count - 1)
+            ctx.hold_reason = self._hold_reason(ctx, market, now, observing=False)
             return
 
         # Anti-chase: if ask moved far above best_seen when model first liked it
@@ -272,6 +299,9 @@ class SignalEngine:
             if ask > max_chase and prob.estimated_net_edge < self.settings.min_net_edge + 0.02:
                 ctx.display_state = SignalType.OPPORTUNITY_MISSED
                 ctx.confirmation_count = 0
+                ctx.hold_reason = (
+                    f"Ask ran from {ctx.best_seen_ask:.0f}¢ to {ask:.0f}¢. Do not chase."
+                )
                 return
 
         # Already have active actionable signal for this market?
@@ -294,6 +324,57 @@ class SignalEngine:
             strong=is_strong,
             now_ms=now,
         )
+
+    def _score_market(self, ctx: MatchContext, market: MarketState) -> ProbabilityResult:
+        player = market_yes_player(ctx, market)
+        prob = self.prob_model.estimate(
+            player=player, market=market, tennis=ctx.tennis, direction="YES"
+        )
+        conf = self.conf_calc.calculate(market, prob, confirmation_count=ctx.confirmation_count)
+        ctx.last_model = prob
+        ctx.last_confidence = conf.confidence
+        return prob
+
+    def _hold_reason(
+        self,
+        ctx: MatchContext,
+        market: MarketState,
+        now: float,
+        *,
+        observing: bool,
+    ) -> str:
+        """Why this market is not a BET NOW. Uses the latest score."""
+        s = self.settings
+        parts: list[str] = []
+        prob = ctx.last_model
+        confidence = ctx.last_confidence
+        if observing:
+            left = max(0.0, ctx.observation_ends_ms - now)
+            parts.append(
+                f"Observation has {format_mmss(left)} left. No BET NOW until that clock ends."
+            )
+        if prob is None or confidence is None:
+            parts.append("Waiting for a usable Kalshi quote.")
+            return " ".join(parts)
+        if confidence < s.min_bet_confidence:
+            parts.append(f"Confidence {confidence:.0f} is below {s.min_bet_confidence:.0f}.")
+        if prob.estimated_net_edge < s.min_net_edge:
+            parts.append(
+                f"Net edge {prob.estimated_net_edge * 100:+.1f}pp is below "
+                f"+{s.min_net_edge * 100:.0f}pp after fees, slippage, and the safety margin."
+            )
+        if market.spread > s.max_spread_cents:
+            parts.append(
+                f"Spread {market.spread:.1f}¢ is wider than {s.max_spread_cents:.0f}¢."
+            )
+        liquidity = market.depth_yes + market.depth_no
+        if liquidity < s.min_liquidity_contracts:
+            parts.append(
+                f"Visible liquidity is {liquidity:.0f} contracts. Need {s.min_liquidity_contracts:.0f}."
+            )
+        if not parts:
+            parts.append("Conditions are being checked. No bet has been cleared yet.")
+        return " ".join(parts)
 
     def _entry_conditions_ok(
         self,
@@ -580,7 +661,9 @@ class SignalEngine:
                     "orderbook_pressure": market.imbalance if market else None,
                     "model_probability": ctx.last_model.model_win_probability if ctx.last_model else None,
                     "estimated_edge": ctx.last_model.estimated_net_edge if ctx.last_model else None,
-                    "confidence": None,
+                    "raw_edge": ctx.last_model.raw_edge if ctx.last_model else None,
+                    "confidence": ctx.last_confidence,
+                    "hold_reason": ctx.hold_reason,
                     "analysis_mode": ctx.analysis_mode,
                     "display_state": ctx.display_state.value,
                     "observation_ends_ms": ctx.observation_ends_ms,

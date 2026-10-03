@@ -166,7 +166,7 @@ export function useLiveFeed() {
           if (d.connection_status) setConnection(d.connection_status);
         })
         .catch(() => undefined);
-    }, 1000);
+    }, 3000);
     return () => clearInterval(id);
   }, []);
 

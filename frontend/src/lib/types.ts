@@ -54,6 +54,9 @@ export interface MatchCard {
   orderbook_pressure?: number | null;
   model_probability?: number | null;
   estimated_edge?: number | null;
+  raw_edge?: number | null;
+  confidence?: number | null;
+  hold_reason?: string | null;
   analysis_mode: string;
   display_state: string;
   observation_ends_ms?: number;

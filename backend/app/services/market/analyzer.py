@@ -103,7 +103,10 @@ class RollingMarketAnalyzer:
     def __init__(self, ticker: str, window_sizes_ms: list[int]) -> None:
         self.ticker = ticker
         self.window_sizes_ms = sorted(window_sizes_ms)
-        self._ticks: Deque[TickPoint] = deque(maxlen=50_000)
+        # Cap history. The longest window is 5 minutes; unbounded scans were
+        # blocking the API on every WebSocket tick.
+        self._ticks: Deque[TickPoint] = deque(maxlen=8_000)
+        self._last_recompute_ms = 0.0
         self.state = MarketState(ticker=ticker)
         for w in self.window_sizes_ms:
             self.state.windows[w] = WindowStats(window_ms=w)
@@ -161,12 +164,24 @@ class RollingMarketAnalyzer:
             depth_no=self.state.depth_no,
         )
         self._ticks.append(tick)
-        self._recompute_windows(ts)
+        # Drop anything older than the longest window, then recompute at most
+        # a few times a second so a hot order book cannot stall HTTP.
+        max_w = self.window_sizes_ms[-1] if self.window_sizes_ms else 0
+        while self._ticks and ts - self._ticks[0].ts_ms > max_w:
+            self._ticks.popleft()
+        if ts - self._last_recompute_ms >= 200 or self._last_recompute_ms == 0:
+            self._recompute_windows(ts)
+            self._last_recompute_ms = ts
         return self.state
 
     def _recompute_windows(self, now_ms: float) -> None:
+        ticks = list(self._ticks)
+        n = len(ticks)
+        start = 0
         for w in self.window_sizes_ms:
-            pts = [t for t in self._ticks if now_ms - t.ts_ms <= w]
+            while start < n and now_ms - ticks[start].ts_ms > w:
+                start += 1
+            pts = ticks[start:]
             stats = WindowStats(window_ms=w, count=len(pts))
             if len(pts) >= 2:
                 mids = [p.mid for p in pts]

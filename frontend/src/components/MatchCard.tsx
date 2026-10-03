@@ -78,9 +78,13 @@ export function MatchCard({
           label="Edge"
           value={
             match.estimated_edge != null
-              ? `${match.estimated_edge >= 0 ? "+" : ""}${(match.estimated_edge * 100).toFixed(1)}%`
+              ? `${match.estimated_edge >= 0 ? "+" : ""}${(match.estimated_edge * 100).toFixed(1)}pp`
               : "—"
           }
+        />
+        <Stat
+          label="Confidence"
+          value={match.confidence != null ? `${Math.round(match.confidence)}` : "—"}
         />
         <Stat
           label="Spread"
@@ -108,6 +112,10 @@ export function MatchCard({
         <span className="text-mist/30">·</span>
         <span className="text-mist/70">{match.display_state.replace(/_/g, " ")}</span>
       </div>
+
+      {match.hold_reason && (
+        <p className="mt-4 text-sm leading-relaxed text-mist/75">{match.hold_reason}</p>
+      )}
 
       {studying && (
         <div className="mt-4 border border-signal-mint/30 bg-ink-950/60 px-3 py-3">

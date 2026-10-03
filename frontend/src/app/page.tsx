@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import { ConnectionBadge } from "@/components/ConnectionBadge";
 import { ManualBetModal } from "@/components/ManualBetModal";
+import { LiveReadCard } from "@/components/LiveReadCard";
 import { MatchCard } from "@/components/MatchCard";
 import { PrimarySignalCard } from "@/components/PrimarySignalCard";
 import { useLiveFeed } from "@/hooks/useLiveFeed";
@@ -20,6 +21,21 @@ export default function HomePage() {
   const [authMode, setAuthMode] = useState<"login" | "register" | null>(null);
   const [placeSignal, setPlaceSignal] = useState<LiveSignal | null>(null);
   const [analysisSignal, setAnalysisSignal] = useState<LiveSignal | null>(null);
+
+  const rankedMatches = useMemo(() => {
+    const matches = dashboard?.matches ?? [];
+    const score = (m: (typeof matches)[number]) => {
+      const price = m.kalshi_probability ?? 0;
+      const tradable = price >= 0.08 && price <= 0.92 ? 1 : 0;
+      const liquidity = Math.min(m.liquidity ?? 0, 5000) / 5000;
+      const confidence = (m.confidence ?? 0) / 100;
+      const edge = m.estimated_edge ?? -1;
+      return tradable * 10 + liquidity * 3 + confidence * 2 + edge;
+    };
+    return [...matches].sort((a, b) => score(b) - score(a));
+  }, [dashboard]);
+
+  const featured = rankedMatches.find((m) => m.model_probability != null) ?? null;
 
   const primary = useMemo(() => {
     const actionable = signals
@@ -128,17 +144,24 @@ export default function HomePage() {
             onPlaced={setPlaceSignal}
             onViewAnalysis={setAnalysisSignal}
           />
+        ) : featured ? (
+          <LiveReadCard
+            match={featured}
+            serverNow={serverNow}
+            snapshotServerTimeMs={dashboard?.server_time_ms ?? serverNow}
+            marketCount={dashboard?.live_match_count ?? rankedMatches.length}
+          />
         ) : (
           <div className="border border-white/10 bg-ink-800/40 p-8 md:p-12">
             <p className="font-display text-4xl md:text-5xl text-mist/90">
               {dashboard?.no_live_markets
                 ? "NO LIVE TENNIS MARKETS"
-                : "Still studying."}
+                : "Waiting for quotes."}
             </p>
             <p className="mt-3 font-mono text-sm text-mist/55 uppercase tracking-wider">
               {dashboard?.no_live_markets
                 ? "Waiting for open Kalshi tennis markets"
-                : "Wait · Keep watching · No forced signals"}
+                : "Markets are connected. The first scored read appears as soon as a price arrives."}
             </p>
           </div>
         )}
@@ -158,7 +181,7 @@ export default function HomePage() {
           </div>
         ) : (
           <div className="grid gap-4 md:grid-cols-2">
-            {dashboard.matches.map((m) => (
+            {rankedMatches.map((m) => (
               <MatchCard
                 key={m.market_ticker}
                 match={m}

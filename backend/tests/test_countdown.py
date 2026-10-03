@@ -414,6 +414,59 @@ def test_match_observation_timer_is_absolute():
     assert max(0.0, cooled["cooldown_until_ms"] - (server_now + 61_000)) == 0
 
 
+def test_window_recompute_does_not_stall_on_a_hot_book():
+    analyzer = RollingMarketAnalyzer("KXTEST", [250, 1000, 5000, 300000])
+    base = time.time() * 1000.0
+    started = time.perf_counter()
+    for i in range(4000):
+        analyzer.update(yes_bid=48 + (i % 5), yes_ask=51 + (i % 5), ts_ms=base + i * 20)
+    elapsed = time.perf_counter() - started
+    assert elapsed < 1.5
+    assert analyzer.state.windows[5000].count > 1
+    assert analyzer.state.spread > 0
+
+
+@pytest.mark.asyncio
+async def test_observation_publishes_a_real_read_without_a_bet():
+    """Studying must still show model, edge, confidence, and why there is no BET NOW."""
+    settings = Settings(
+        initial_observation_seconds=300,
+        min_bet_confidence=85,
+        min_net_edge=0.04,
+        database_url="sqlite+aiosqlite:///:memory:",
+    )
+    engine = SignalEngine(settings)
+    engine.snap.connection_status = ConnectionStatus.CONNECTED
+    now = time.time() * 1000.0
+    engine.register_match(
+        match_id="m1",
+        player_a="Swiatek",
+        player_b="Sabalenka",
+        tournament="Test Open",
+        market_ticker="KXTEST",
+        market_db_id="mk1",
+        now_ms=now,
+    )
+    await engine.on_market_update(
+        "KXTEST",
+        yes_bid=40,
+        yes_ask=55,
+        depth_yes=12,
+        depth_no=8,
+        imbalance=-0.1,
+        status="OPEN",
+    )
+    payload = engine.dashboard_payload()
+    card = payload["matches"][0]
+    assert card["display_state"] == "STUDYING_MATCH"
+    assert card["model_probability"] is not None
+    assert card["estimated_edge"] is not None
+    assert card["confidence"] is not None
+    assert "Observation has" in card["hold_reason"]
+    assert "No BET NOW" in card["hold_reason"]
+    assert payload["actionable_signals"] == []
+
+
 def test_ws_subscribe_allows_orderbook_and_blocks_orders():
     from app.services.kalshi.websocket import KalshiWebSocketClient
 
