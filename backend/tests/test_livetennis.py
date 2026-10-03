@@ -168,3 +168,34 @@ async def test_a_rate_limit_holds_the_last_slate():
     assert second is not None and len(second) == 2
     assert third is not None and len(third) == 2
     assert calls["n"] == 2
+
+
+@pytest.mark.asyncio
+async def test_a_restart_during_a_rate_limit_keeps_the_last_slate(tmp_path, monkeypatch):
+    slate = tmp_path / "slate.json"
+    monkeypatch.setattr("app.services.tennis.livetennis._SLATE_FILE", slate)
+    slate.write_text(
+        '{"saved_at": %s, "matches": [{"match_id": "198783", "player_a": "Luis Guto Miguel / Eduardo Ribeiro", "player_b": "Kestelboim / Zormann", "tournament": "Curitiba, Brazil, Doubles", "sets": [[7, 5], [4, 3]], "point_score": "30-30", "match_score": "1-0", "server": "B"}]}'
+        % __import__("time").time()
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(429, json={"error": "rate_limited"}, headers={"Retry-After": "60"})
+
+    settings = Settings(
+        tennis_provider="livetennis",
+        tennis_api_key="test-key",
+        tennis_api_base_url="https://api.livetennisapi.com/api/public/v1",
+        tennis_poll_interval_seconds=0,
+    )
+    provider = LiveTennisProvider(settings)
+    await provider._client.aclose()
+    provider._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        live = await provider.list_live_matches()
+    finally:
+        await provider.close()
+    assert live is not None and len(live) == 1
+    assert live[0].player_a == "Luis Guto Miguel / Eduardo Ribeiro"
+    assert live[0].set_score == "7-5 4-3"
+    assert live[0].point_score == "30-30"

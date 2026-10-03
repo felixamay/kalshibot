@@ -7,10 +7,12 @@ contracts for those players.
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Optional
 
 import httpx
@@ -26,6 +28,9 @@ logger = logging.getLogger(__name__)
 # in minutes and then blocked.
 _MIN_POLL_SECONDS = 20.0
 _DEFAULT_BASE = "https://api.livetennisapi.com/api/public/v1"
+# A restart during a rate limit used to forget the match that was already live.
+_SLATE_FILE = Path("/tmp/courtedg-livetennis-slate.json")
+_SLATE_MAX_AGE_SECONDS = 3 * 60 * 60
 
 
 @dataclass
@@ -219,10 +224,13 @@ class LiveTennisProvider(TennisDataProvider):
                 return self._live
             return None
         if collected is None:
+            if not self._ok:
+                self._restore_saved_slate()
             return self._live if self._ok else None
         self._live = collected
         self._fetched_at = time.time()
         self._ok = True
+        self._save_slate()
         logger.info("Live Tennis in-progress matches: %d", len(collected))
         return collected
 
@@ -252,6 +260,63 @@ class LiveTennisProvider(TennisDataProvider):
                 break
             offset = int(meta.get("offset") or 0) + int(meta.get("limit") or 200)
         return collected
+
+    def _save_slate(self) -> None:
+        try:
+            payload = {
+                "saved_at": time.time(),
+                "matches": [
+                    {
+                        "match_id": match.match_id,
+                        "player_a": match.player_a,
+                        "player_b": match.player_b,
+                        "tournament": match.tournament,
+                        "sets": [list(pair) for pair in match.sets],
+                        "point_score": match.point_score,
+                        "match_score": match.match_score,
+                        "server": match.server,
+                    }
+                    for match in self._live
+                ],
+            }
+            _SLATE_FILE.write_text(json.dumps(payload))
+        except OSError as exc:
+            logger.warning("Could not save the Live Tennis slate: %s", exc)
+
+    def _restore_saved_slate(self) -> None:
+        try:
+            payload = json.loads(_SLATE_FILE.read_text())
+        except (OSError, json.JSONDecodeError):
+            return
+        saved_at = float(payload.get("saved_at") or 0)
+        if time.time() - saved_at > _SLATE_MAX_AGE_SECONDS:
+            return
+        matches: list[LiveTennisMatch] = []
+        for row in payload.get("matches") or []:
+            if not isinstance(row, dict):
+                continue
+            sets = []
+            for pair in row.get("sets") or []:
+                if isinstance(pair, (list, tuple)) and len(pair) >= 2:
+                    sets.append((int(pair[0]), int(pair[1])))
+            matches.append(
+                LiveTennisMatch(
+                    match_id=str(row.get("match_id") or ""),
+                    player_a=str(row.get("player_a") or ""),
+                    player_b=str(row.get("player_b") or ""),
+                    tournament=row.get("tournament"),
+                    sets=sets,
+                    point_score=row.get("point_score"),
+                    match_score=row.get("match_score"),
+                    server=row.get("server"),
+                )
+            )
+        if not matches:
+            return
+        self._live = matches
+        self._ok = True
+        self._fetched_at = saved_at
+        logger.info("Restored %d Live Tennis matches from the last slate", len(matches))
 
     def _note_rate_limit(self, response: httpx.Response) -> None:
         retry_after = response.headers.get("Retry-After")
