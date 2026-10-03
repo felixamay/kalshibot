@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ConnectionBadge } from "@/components/ConnectionBadge";
 import { ManualBetModal } from "@/components/ManualBetModal";
 import { LiveReadCard } from "@/components/LiveReadCard";
@@ -27,6 +27,26 @@ function needsBet(state: string) {
 function isBetSignal(signal: LiveSignal) {
   const kind = signal.raw_signal_type || signal.signal_type;
   return BET_STATES.has(kind);
+}
+
+const BET_ROTATE_MS = 10_000;
+
+function useRotatingBet(signals: LiveSignal[]): LiveSignal | null {
+  const hold = useRef<{ id: string; until: number } | null>(null);
+  return useMemo(() => {
+    if (signals.length === 0) {
+      hold.current = null;
+      return null;
+    }
+    const now = Date.now();
+    const held = hold.current;
+    const current = held ? signals.find((s) => s.signal_id === held.id) : undefined;
+    if (current && held && now < held.until) return current;
+    const idx = held ? signals.findIndex((s) => s.signal_id === held.id) : -1;
+    const next = signals[(idx + 1) % signals.length];
+    hold.current = { id: next.signal_id, until: now + BET_ROTATE_MS };
+    return next;
+  }, [signals]);
 }
 
 export default function HomePage() {
@@ -108,8 +128,12 @@ export default function HomePage() {
         byMarket.set(key, signal);
       }
     }
-    return [...byMarket.values()].sort((a, b) => b.created_at_ms - a.created_at_ms);
+    return [...byMarket.values()].sort((a, b) =>
+      (a.market_ticker || a.signal_id).localeCompare(b.market_ticker || b.signal_id)
+    );
   }, [signals, serverNow, betMatches]);
+
+  const shownBet = useRotatingBet(betSignals);
 
   useEffect(() => {
     const read = () => localStorage.getItem("kt_token");
@@ -237,36 +261,20 @@ export default function HomePage() {
         <div className="mb-3 flex items-baseline justify-between gap-3">
           <h2 className="font-display text-3xl">Needs a bet</h2>
           <span className="font-mono text-xs uppercase tracking-wider text-mist/50">
-            {betSignals.length + betMatches.filter((m) => !betSignals.some((s) => s.market_ticker === m.market_ticker)).length} ready
+            {shownBet ? "1 ready" : "0 ready"}
           </span>
         </div>
-        {betSignals.length > 0 || betMatches.length > 0 ? (
-          <div className="space-y-4">
-            {betSignals.map((signal) => (
-              <PrimarySignalCard
-                key={signal.signal_id}
-                signal={signal}
-                serverNow={serverNow}
-                alertsEnabled={alertsEnabled}
-                onPlaced={setPlaceSignal}
-                onViewAnalysis={setAnalysisSignal}
-              />
-            ))}
-            {betMatches
-              .filter((m) => !betSignals.some((s) => s.market_ticker === m.market_ticker))
-              .map((m) => (
-                <MatchCard
-                  key={m.market_ticker}
-                  match={m}
-                  serverNow={serverNow}
-                  snapshotServerTimeMs={dashboard?.server_time_ms ?? serverNow}
-                  maxDataAgeMs={dashboard?.max_data_age_ms ?? 5000}
-                />
-              ))}
-          </div>
+        {shownBet ? (
+          <PrimarySignalCard
+            signal={shownBet}
+            serverNow={serverNow}
+            alertsEnabled={alertsEnabled}
+            onPlaced={setPlaceSignal}
+            onViewAnalysis={setAnalysisSignal}
+          />
         ) : (
           <div className="border border-dashed border-white/15 p-5 font-mono text-sm text-mist/60">
-            No live game needs a bet right now. A suggestion appears after the match has started and its pattern has been discovered.
+            No live game needs a bet right now. When one is ready, this section shows that single bet and moves to the next every 10 seconds.
           </div>
         )}
       </section>
