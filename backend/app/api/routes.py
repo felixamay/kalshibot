@@ -272,7 +272,14 @@ async def manual_enter(
     await db.flush()
 
     if ctx:
-        engine.start_cooldown(body.market_ticker)
+        engine.open_position(
+            body.market_ticker,
+            position_id=position.id,
+            player=body.player,
+            direction=body.direction,
+            entry_price=body.entry_price,
+            amount=body.amount,
+        )
 
     return {
         "position_id": position.id,
@@ -321,7 +328,7 @@ async def manual_exit(
     engine = get_engine()
     for ticker, ctx in engine.snap.matches.items():
         if ctx.market_db_id == position.market_id or ticker == position.market_id:
-            engine.start_cooldown(ticker)
+            engine.close_position(ticker)
 
     return {
         "position_id": position.id,

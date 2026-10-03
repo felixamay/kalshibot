@@ -258,7 +258,12 @@ async def test_engine_emits_bet_signal_without_requiring_a_high_price():
         )
     emitted = list(engine.snap.signals.values())
     assert emitted
-    assert emitted[0].signal_type in (SignalType.BET_SIGNAL, SignalType.STRONG_BET_SIGNAL)
+    assert emitted[0].signal_type in (
+        SignalType.ENTRY_SIGNAL,
+        SignalType.STRONG_ENTRY_SIGNAL,
+        SignalType.BET_SIGNAL,
+        SignalType.STRONG_BET_SIGNAL,
+    )
     assert emitted[0].is_actionable()
     assert emitted[0].maximum_entry_price > 42
     assert emitted[0].expires_at_ms > emitted[0].created_at_ms

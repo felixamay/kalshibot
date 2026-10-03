@@ -22,6 +22,17 @@ from app.core.enums import (
 from app.services.market.analyzer import MarketState, RollingMarketAnalyzer
 from app.services.signals.confidence import SignalConfidenceCalculator
 from app.services.signals.live_signal import LiveSignal
+from app.services.signals.match_phase import (
+    EntryView,
+    MatchBaseline,
+    SlipView,
+    TrackedPosition,
+    assess_entry,
+    assess_slip,
+    build_baseline,
+    mark_position,
+    side_mark_price,
+)
 from app.services.signals.mispricing import (
     MarketRead,
     assess_market,
@@ -35,6 +46,21 @@ from app.services.tennis.probability import ProbabilityResult, TennisProbability
 from app.services.tennis.provider import TennisLiveState
 
 logger = logging.getLogger(__name__)
+
+_ENTRY_STATES = {
+    "SEARCHING_FOR_ENTRY": SignalType.SEARCHING_FOR_ENTRY,
+    "ENTRY_DEVELOPING": SignalType.ENTRY_DEVELOPING,
+    "ENTRY_SIGNAL": SignalType.ENTRY_SIGNAL,
+    "STRONG_ENTRY_SIGNAL": SignalType.STRONG_ENTRY_SIGNAL,
+    "DO_NOT_ENTER": SignalType.DO_NOT_ENTER,
+    "OPPORTUNITY_PASSED": SignalType.OPPORTUNITY_PASSED,
+}
+_SLIP_STATES = {
+    "HOLD": SignalType.HOLD,
+    "WATCH_CLOSELY": SignalType.WATCH_CLOSELY,
+    "SLIPPING": SignalType.SLIPPING,
+    "STOP_EXIT_SIGNAL": SignalType.STOP_EXIT_SIGNAL,
+}
 
 BroadcastFn = Callable[[dict[str, Any]], Awaitable[None]]
 
@@ -73,6 +99,12 @@ class MatchContext:
     hold_reason: str = "Waiting for the first Kalshi quote."
     chase_blocked_until_ms: float = 0.0
     best_seen_ask: Optional[float] = None  # for anti-chase
+    baseline: Optional[MatchBaseline] = None
+    position: Optional[TrackedPosition] = None
+    last_entry: Optional[EntryView] = None
+    last_slip: Optional[SlipView] = None
+    slip_confirmation: int = 0
+    phase_events: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -197,18 +229,27 @@ class SignalEngine:
             self._score_market(ctx, market)
 
         if self.snap.connection_status != ConnectionStatus.CONNECTED:
-            ctx.display_state = SignalType.DATA_DELAY
-            ctx.hold_reason = "Live connection is down. No bet on a disconnected feed."
+            if ctx.position is not None:
+                await self._evaluate_position(ctx, market, now, emergency_forced=True)
+                ctx.hold_reason = (
+                    "Live connection is down. STOP / EXIT SIGNAL. Nothing is sold automatically."
+                )
+            else:
+                ctx.display_state = SignalType.DATA_DELAY
+                ctx.hold_reason = "Live connection is down. No entry on a disconnected feed."
             return
 
         status_u = (market.status or "").upper()
         if status_u in ("CLOSED", "SETTLED"):
             ctx.display_state = SignalType.NO_BET
-            ctx.hold_reason = "Market is closed. No bet."
+            ctx.hold_reason = "Market is closed. No entry."
             return
         if status_u == "SUSPENDED":
-            ctx.display_state = SignalType.NO_BET
-            ctx.hold_reason = "Market is suspended. No bet."
+            if ctx.position is not None:
+                await self._evaluate_position(ctx, market, now, emergency_forced=True)
+            else:
+                ctx.display_state = SignalType.NO_BET
+                ctx.hold_reason = "Market is suspended. No entry."
             return
 
         # Observation period — publish the read, but never a BET NOW.
@@ -228,10 +269,17 @@ class SignalEngine:
                 )
                 ctx.last_read = preview
                 ctx.hold_reason = (
-                    "No BET SIGNAL until the observation clock ends. " + preview.explanation
+                    "STUDYING MATCH. No BET SIGNAL until the observation clock ends. "
+                    "Learning this match's own volatility, spread, liquidity, and momentum. "
+                    + preview.explanation
                 )
             else:
                 ctx.hold_reason = "No BET SIGNAL until the observation clock ends."
+            self._remember_phase(ctx, SignalType.STUDYING_MATCH, now)
+            return
+
+        if ctx.position is not None:
+            await self._evaluate_position(ctx, market, now, emergency_forced=False)
             return
 
         if market.data_age_ms > self.settings.max_data_age_ms:
@@ -242,88 +290,26 @@ class SignalEngine:
             )
             return
 
-        # Cooldown after exit
+        # Cooldown after a manual exit. Do not recommend a new entry yet.
         if now < ctx.cooldown_until_ms:
             ctx.analysis_mode = AnalysisMode.COOLDOWN.value
-            ctx.display_state = SignalType.KEEP_WATCHING
-            ctx.hold_reason = "Cooldown after the last manual exit. Full reassessment when it ends."
+            ctx.display_state = SignalType.COOLDOWN
+            ctx.hold_reason = (
+                "Cooldown after the exit. The match is still being watched. "
+                "No new entry until the cooldown ends."
+            )
+            self._remember_phase(ctx, SignalType.COOLDOWN, now)
             return
 
         if ctx.signals_emitted >= self.settings.max_signals_per_match:
-            ctx.display_state = SignalType.NO_BET
+            ctx.display_state = SignalType.DO_NOT_ENTER
             ctx.hold_reason = (
                 f"This match already produced {ctx.signals_emitted} signals. "
                 f"The cap is {self.settings.max_signals_per_match}."
             )
             return
 
-        tennis = ctx.tennis
-        ctx.analysis_mode = (
-            AnalysisMode.TENNIS_ENHANCED.value
-            if tennis and tennis.available
-            else AnalysisMode.MARKET_ONLY.value
-        )
-
-        # Evaluate YES on player_a (primary market convention)
-        if ctx.last_model is None:
-            self._score_market(ctx, market)
-        prob = ctx.last_model
-        if prob is None or ctx.last_confidence is None:
-            ctx.display_state = SignalType.NO_BET
-            ctx.hold_reason = "Waiting for a usable Kalshi quote."
-            return
-
-        read = self._read_market(ctx, market, prob, ctx.last_confidence)
-        ask = market.executable_yes_price()
-        if (
-            read.dynamic_min_edge is not None
-            and read.uncertainty_adjusted_edge >= read.dynamic_min_edge
-            and (ctx.best_seen_ask is None or ask < ctx.best_seen_ask)
-        ):
-            ctx.best_seen_ask = ask
-        ctx.hold_reason = read.explanation
-
-        if read.decision == "MATCH_TOO_VOLATILE":
-            ctx.display_state = SignalType.MATCH_TOO_VOLATILE
-            ctx.confirmation_count = 0
-            return
-        if read.decision in ("OPPORTUNITY_MISSED", "DO_NOT_CHASE"):
-            ctx.display_state = (
-                SignalType.OPPORTUNITY_MISSED
-                if read.decision == "OPPORTUNITY_MISSED"
-                else SignalType.DO_NOT_CHASE
-            )
-            ctx.confirmation_count = 0
-            return
-        if read.decision in ("BET_SIGNAL", "STRONG_BET_SIGNAL"):
-            active = self._active_signal_for(ticker)
-            if active and active.is_actionable(now):
-                return
-            await self._emit_bet_signal(
-                ctx=ctx,
-                market=market,
-                prob=prob,
-                confidence=ctx.last_confidence,
-                strong=read.decision == "STRONG_BET_SIGNAL",
-                now_ms=now,
-                read=read,
-            )
-            return
-        if read.decision == "CLOSE_TO_SIGNAL":
-            ctx.display_state = SignalType.CLOSE_TO_SIGNAL
-            return
-        if read.decision == "WATCH":
-            ctx.display_state = SignalType.WATCH
-            ctx.confirmation_count = max(0, ctx.confirmation_count)
-            return
-
-        ctx.confirmation_count = max(0, ctx.confirmation_count - 1)
-        if read.uncertainty_adjusted_edge < -0.02:
-            ctx.display_state = SignalType.NO_BET
-        elif read.uncertainty_adjusted_edge > 0:
-            ctx.display_state = SignalType.WAIT
-        else:
-            ctx.display_state = SignalType.NO_BET
+        await self._evaluate_entry(ctx, market, now)
 
     def _score_market(self, ctx: MatchContext, market: MarketState) -> ProbabilityResult:
         player = market_yes_player(ctx, market)
@@ -384,6 +370,249 @@ class SignalEngine:
         )
         ctx.last_read = read
         return read
+
+    def _remember_phase(self, ctx: MatchContext, state: SignalType, now: float) -> None:
+        if ctx.phase_events and ctx.phase_events[-1].get("state") == state.value:
+            return
+        ctx.phase_events.append({"t_ms": now, "state": state.value})
+        if len(ctx.phase_events) > 40:
+            ctx.phase_events = ctx.phase_events[-40:]
+
+    def _ensure_baseline(self, ctx: MatchContext, ticker: str) -> MatchBaseline:
+        if ctx.baseline is not None:
+            return ctx.baseline
+        analyzer = self.snap.analyzers.get(ticker)
+        ticks = analyzer.ticks_since(ctx.observation_started_ms) if analyzer else []
+        ctx.baseline = build_baseline(ticks, self.settings)
+        return ctx.baseline
+
+    async def _evaluate_entry(self, ctx: MatchContext, market: MarketState, now: float) -> None:
+        ticker = ctx.market_ticker
+        baseline = self._ensure_baseline(ctx, ticker)
+        tennis = ctx.tennis
+        ctx.analysis_mode = (
+            AnalysisMode.TENNIS_ENHANCED.value
+            if tennis and tennis.available
+            else AnalysisMode.MARKET_ONLY.value
+        )
+        prob = ctx.last_model
+        if prob is None or ctx.last_confidence is None:
+            ctx.display_state = SignalType.SEARCHING_FOR_ENTRY
+            ctx.hold_reason = "Waiting for a usable Kalshi quote."
+            return
+        tennis_ok = bool(tennis and tennis.available) or prob.source == "tennis_enhanced"
+        read = assess_market(
+            self.settings,
+            market,
+            prob,
+            confidence=ctx.last_confidence,
+            confirmation_count=ctx.confirmation_count,
+            tennis_available=tennis_ok,
+            best_seen_ask=ctx.best_seen_ask,
+        )
+        ctx.last_read = read
+        view = assess_entry(
+            self.settings,
+            market,
+            prob,
+            read,
+            baseline,
+            confirmation_count=ctx.confirmation_count,
+            best_seen_ask=ctx.best_seen_ask,
+            player_a=ctx.player_a,
+            player_b=ctx.player_b,
+        )
+        if view.qualifying:
+            ctx.confirmation_count += 1
+            view = assess_entry(
+                self.settings,
+                market,
+                prob,
+                read,
+                baseline,
+                confirmation_count=ctx.confirmation_count,
+                best_seen_ask=ctx.best_seen_ask,
+                player_a=ctx.player_a,
+                player_b=ctx.player_b,
+            )
+        elif view.decision == "ENTRY_DEVELOPING":
+            ctx.confirmation_count = ctx.confirmation_count
+        else:
+            ctx.confirmation_count = max(0, ctx.confirmation_count - 1)
+        ctx.last_entry = view
+        ask = view.current_price
+        if view.entry_score >= self.settings.watch_entry_score and (
+            ctx.best_seen_ask is None or ask < ctx.best_seen_ask
+        ):
+            ctx.best_seen_ask = ask
+
+        active = self._active_signal_for(ticker)
+        if active and active.is_actionable(now):
+            if view.decision not in ("ENTRY_SIGNAL", "STRONG_ENTRY_SIGNAL"):
+                reason = (
+                    ExpirationReason.PRICE_MOVED
+                    if ask > active.maximum_entry_price
+                    else ExpirationReason.EDGE_DISAPPEARED
+                )
+                message = (
+                    "DO NOT ENTER. PRICE MOVED BEYOND ENTRY WINDOW."
+                    if reason == ExpirationReason.PRICE_MOVED
+                    else "ENTRY CANCELLED. CONDITIONS CHANGED."
+                )
+                active.cancel(reason, price=ask, message=message, server_now_ms=now)
+                await self._emit_signal_update(active)
+                ctx.confirmation_count = 0
+            else:
+                ctx.display_state = active.signal_type
+                ctx.hold_reason = view.explanation
+                return
+
+        state = _ENTRY_STATES.get(view.decision, SignalType.SEARCHING_FOR_ENTRY)
+        ctx.display_state = state
+        ctx.hold_reason = view.explanation
+        self._remember_phase(ctx, state, now)
+        if view.decision in ("ENTRY_SIGNAL", "STRONG_ENTRY_SIGNAL"):
+            if ctx.signals_emitted >= self.settings.max_signals_per_match:
+                ctx.display_state = SignalType.DO_NOT_ENTER
+                ctx.hold_reason = (
+                    f"This match already produced {ctx.signals_emitted} signals. "
+                    f"The cap is {self.settings.max_signals_per_match}."
+                )
+                return
+            await self._emit_bet_signal(
+                ctx=ctx,
+                market=market,
+                prob=prob,
+                confidence=view.entry_score,
+                strong=view.decision == "STRONG_ENTRY_SIGNAL",
+                now_ms=now,
+                read=read,
+                signal_kind=(
+                    SignalType.STRONG_ENTRY_SIGNAL
+                    if view.decision == "STRONG_ENTRY_SIGNAL"
+                    else SignalType.ENTRY_SIGNAL
+                ),
+                max_entry_override=view.maximum_entry_price,
+                player_name=view.player,
+                trade_direction=view.direction,
+            )
+
+    async def _evaluate_position(
+        self,
+        ctx: MatchContext,
+        market: MarketState,
+        now: float,
+        *,
+        emergency_forced: bool,
+    ) -> None:
+        position = ctx.position
+        if position is None:
+            return
+        baseline = self._ensure_baseline(ctx, ctx.market_ticker)
+        price = side_mark_price(market, position.direction)
+        mark_position(position, price)
+        model_p = ctx.last_model.model_win_probability if ctx.last_model else position.entry_model_probability
+        if position.direction == "NO" and ctx.last_model is not None:
+            model_p = 1.0 - ctx.last_model.model_win_probability
+        if emergency_forced:
+            ctx.slip_confirmation = self.settings.exit_confirmation_count
+        elif True:
+            preview = assess_slip(
+                self.settings,
+                market,
+                position,
+                baseline,
+                model_probability=model_p,
+                confirmation_count=ctx.slip_confirmation,
+                emergency_forced=False,
+            )
+            if preview.emergency:
+                ctx.slip_confirmation = self.settings.exit_confirmation_count
+            elif preview.slip_score >= self.settings.slipping_score:
+                ctx.slip_confirmation += 1
+            elif preview.slip_score < self.settings.watch_slip_score:
+                ctx.slip_confirmation = 0
+            else:
+                ctx.slip_confirmation = max(0, ctx.slip_confirmation - 1)
+        view = assess_slip(
+            self.settings,
+            market,
+            position,
+            baseline,
+            model_probability=model_p,
+            confirmation_count=ctx.slip_confirmation,
+            emergency_forced=emergency_forced,
+        )
+        ctx.last_slip = view
+        state = _SLIP_STATES.get(view.decision, SignalType.HOLD)
+        ctx.display_state = state
+        ctx.hold_reason = view.explanation
+        ctx.analysis_mode = "POSITION"
+        self._remember_phase(ctx, state, now)
+
+    def open_position(
+        self,
+        ticker: str,
+        *,
+        position_id: str,
+        player: str,
+        direction: str,
+        entry_price: float,
+        amount: float,
+        now_ms: float | None = None,
+    ) -> None:
+        """Switch this match from entry search to position protection. No order is sent."""
+        ctx = self.snap.matches.get(ticker)
+        if not ctx:
+            return
+        now = now_ms or time.time() * 1000.0
+        analyzer = self.snap.analyzers.get(ticker)
+        market = analyzer.state if analyzer else None
+        mom = 0.0
+        imb = 0.0
+        depth = 0.0
+        spread = 0.0
+        if market is not None:
+            w5 = market.windows.get(5000)
+            mom = (w5.momentum if w5 else 0.0) or 0.0
+            imb = market.imbalance
+            depth = market.depth_yes + market.depth_no
+            spread = market.spread
+        model_p = ctx.last_model.model_win_probability if ctx.last_model else 0.5
+        score = ctx.last_entry.entry_score if ctx.last_entry else (ctx.last_confidence or 0.0)
+        ctx.position = TrackedPosition(
+            position_id=position_id,
+            player=player,
+            direction=direction,
+            entry_price=entry_price,
+            amount=amount,
+            entered_at_ms=now,
+            entry_momentum=mom,
+            entry_imbalance=imb if direction == "YES" else -imb,
+            entry_liquidity=depth,
+            entry_spread=spread,
+            entry_model_probability=model_p if direction == "YES" else 1.0 - model_p,
+            entry_signal_score=score,
+            entry_trade_flow=mom,
+            peak_price=entry_price,
+            current_price=entry_price,
+        )
+        ctx.slip_confirmation = 0
+        ctx.confirmation_count = 0
+        ctx.cooldown_until_ms = 0.0
+        ctx.display_state = SignalType.HOLD
+        ctx.hold_reason = "Position recorded. Watching whether it stays healthy. No order was sent."
+        ctx.analysis_mode = "POSITION"
+        self._remember_phase(ctx, SignalType.HOLD, now)
+
+    def close_position(self, ticker: str, now_ms: float | None = None) -> None:
+        ctx = self.snap.matches.get(ticker)
+        if ctx:
+            ctx.position = None
+            ctx.last_slip = None
+            ctx.slip_confirmation = 0
+            self._remember_phase(ctx, SignalType.COOLDOWN, now_ms or time.time() * 1000.0)
+        self.start_cooldown(ticker, now_ms)
 
     def _hold_reason(
         self,
@@ -506,8 +735,17 @@ class SignalEngine:
             )
             sig.cancel(ExpirationReason.PRICE_MOVED, price=current, message=msg, server_now_ms=now)
             await self._emit_signal_update(sig)
-            ctx.display_state = SignalType.DO_NOT_CHASE
+            if sig.signal_type in (SignalType.ENTRY_SIGNAL, SignalType.STRONG_ENTRY_SIGNAL):
+                ctx.display_state = SignalType.DO_NOT_ENTER
+                ctx.hold_reason = "DO NOT ENTER. PRICE MOVED BEYOND ENTRY WINDOW. DO NOT CHASE."
+            else:
+                ctx.display_state = SignalType.DO_NOT_CHASE
             ctx.confirmation_count = 0
+            return
+
+        if sig.signal_type in (SignalType.ENTRY_SIGNAL, SignalType.STRONG_ENTRY_SIGNAL):
+            # Hard safety already ran. The entry pass cancels the signal if the
+            # timing score breaks. Do not apply the old fixed-edge cancel here.
             return
 
         # Recompute edge against the current book's dynamic threshold.
@@ -608,6 +846,10 @@ class SignalEngine:
         strong: bool,
         now_ms: float,
         read: MarketRead | None = None,
+        signal_kind: SignalType | None = None,
+        max_entry_override: float | None = None,
+        player_name: str | None = None,
+        trade_direction: str | None = None,
     ) -> None:
         # Supersede previous
         prev = self._active_signal_for(ctx.market_ticker)
@@ -620,11 +862,11 @@ class SignalEngine:
         self._seq += 1
         signal_id = f"SIG-{_slug(prob.player)}-{_slug(ctx.tournament or 'TEN')}-{self._seq % 100000:05d}"
 
-        ask = market.executable_yes_price() if prob.direction == "YES" else market.executable_no_price()
+        direction = trade_direction or prob.direction
+        ask = market.executable_yes_price() if direction == "YES" else market.executable_no_price()
         model_cap = read.max_entry_price_cents if read else ask + self.settings.max_entry_slippage_cents
-        max_entry = min(model_cap, ask + self.settings.max_entry_slippage_cents)
-        # The model cap is the economic maximum. Do not allow a looser ask+slippage cap above it.
-        max_entry = model_cap
+        max_entry = max_entry_override if max_entry_override is not None else model_cap
+        kind = signal_kind or (SignalType.STRONG_BET_SIGNAL if strong else SignalType.BET_SIGNAL)
 
         sig = LiveSignal(
             signal_id=signal_id,
@@ -632,9 +874,9 @@ class SignalEngine:
             match_id=ctx.match_id,
             market_id=ctx.market_db_id,
             market_ticker=ctx.market_ticker,
-            signal_type=SignalType.STRONG_BET_SIGNAL if strong else SignalType.BET_SIGNAL,
-            player=prob.player,
-            direction=prob.direction,
+            signal_type=kind,
+            player=player_name or prob.player,
+            direction=direction,
             created_at_ms=now_ms,
             expires_at_ms=now_ms + ttl.ttl_ms,
             original_ttl_ms=ttl.ttl_ms,
@@ -699,7 +941,8 @@ class SignalEngine:
         if ctx:
             ctx.cooldown_until_ms = now + self.settings.reentry_cooldown_seconds * 1000
             ctx.analysis_mode = AnalysisMode.COOLDOWN.value
-            ctx.display_state = SignalType.KEEP_WATCHING
+            ctx.display_state = SignalType.COOLDOWN
+            self._remember_phase(ctx, SignalType.COOLDOWN, now)
 
     def tick_expirations(self) -> list[LiveSignal]:
         """Called periodically to expire TTL without waiting for market tick."""
@@ -757,6 +1000,11 @@ class SignalEngine:
                     "tennis": ctx.tennis.to_dict() if ctx.tennis else {"available": False, "analysis_note": "MARKET-ONLY ANALYSIS"},
                     "active_signal": active.to_public_dict(now) if active else None,
                     "market_snapshot": analyzer.snapshot() if analyzer else None,
+                    "baseline": ctx.baseline.as_dict() if ctx.baseline else None,
+                    "entry": ctx.last_entry.as_dict() if ctx.last_entry else None,
+                    "slip": ctx.last_slip.as_dict() if ctx.last_slip else None,
+                    "phase_events": ctx.phase_events[-12:],
+                    "position": _position_payload(ctx),
                 }
             )
 
@@ -779,6 +1027,27 @@ class SignalEngine:
             "message": "NO LIVE TENNIS MARKETS" if len(self.snap.matches) == 0 else None,
             "max_data_age_ms": self.settings.max_data_age_ms,
         }
+
+
+def _position_payload(ctx: MatchContext) -> dict[str, Any] | None:
+    pos = ctx.position
+    if pos is None:
+        return None
+    slip = ctx.last_slip
+    return {
+        "position_id": pos.position_id,
+        "player": pos.player,
+        "direction": pos.direction,
+        "entry_price": pos.entry_price,
+        "amount": pos.amount,
+        "current_price": pos.current_price,
+        "peak_price": pos.peak_price,
+        "drawdown_from_peak": pos.drawdown_from_peak,
+        "slip_score": slip.slip_score if slip else None,
+        "health": slip.health if slip else None,
+        "status": ctx.display_state.value,
+        "entered_at_ms": pos.entered_at_ms,
+    }
 
 
 def format_mmss(ms: float) -> str:

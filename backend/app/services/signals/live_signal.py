@@ -172,35 +172,40 @@ class LiveSignal:
             "confirmation_count": self.confirmation_count,
             "lifecycle": self.lifecycle[-20:],
             # Never leave BET NOW visible when not actionable
-            "display_label": (
-                signal_display_label(self.signal_type)
-                if actionable
-                else (
-                    "SIGNAL EXPIRED"
-                    if self.expiration_reason == ExpirationReason.TTL_EXPIRED
-                    or (self.status == SignalStatus.ACTIVE and now >= self.expires_at_ms)
-                    else (
-                        "OPPORTUNITY EXPIRED"
-                        if self.expiration_reason
-                        in (
-                            ExpirationReason.PRICE_MOVED,
-                            ExpirationReason.EDGE_DISAPPEARED,
-                        )
-                        else "SIGNAL EXPIRED"
-                    )
-                )
-            ),
-            "display_sublabel": (
-                None
-                if actionable
-                else (
-                    "REANALYZING..."
-                    if self.expiration_reason in (ExpirationReason.TTL_EXPIRED, None)
-                    else (
-                        "DO NOT CHASE"
-                        if self.expiration_reason == ExpirationReason.PRICE_MOVED
-                        else self.expiration_message
-                    )
-                )
-            ),
+            "display_label": _display_label(self, actionable, now),
+            "display_sublabel": _display_sublabel(self, actionable),
         }
+
+
+def _entry_type(signal: LiveSignal) -> bool:
+    return signal.signal_type in (SignalType.ENTRY_SIGNAL, SignalType.STRONG_ENTRY_SIGNAL)
+
+
+def _display_label(signal: LiveSignal, actionable: bool, now: float) -> str:
+    if actionable:
+        return signal_display_label(signal.signal_type)
+    if _entry_type(signal) and signal.expiration_reason == ExpirationReason.PRICE_MOVED:
+        return "DO NOT ENTER"
+    if _entry_type(signal) and signal.expiration_reason == ExpirationReason.EDGE_DISAPPEARED:
+        return "ENTRY CANCELLED"
+    if signal.expiration_reason == ExpirationReason.TTL_EXPIRED or (
+        signal.status == SignalStatus.ACTIVE and now >= signal.expires_at_ms
+    ):
+        return "SIGNAL EXPIRED"
+    if signal.expiration_reason in (ExpirationReason.PRICE_MOVED, ExpirationReason.EDGE_DISAPPEARED):
+        return "OPPORTUNITY EXPIRED"
+    return "SIGNAL EXPIRED"
+
+
+def _display_sublabel(signal: LiveSignal, actionable: bool) -> str | None:
+    if actionable:
+        return None
+    if _entry_type(signal) and signal.expiration_reason == ExpirationReason.PRICE_MOVED:
+        return "PRICE MOVED BEYOND ENTRY WINDOW"
+    if _entry_type(signal) and signal.expiration_reason == ExpirationReason.EDGE_DISAPPEARED:
+        return "CONDITIONS CHANGED"
+    if signal.expiration_reason in (ExpirationReason.TTL_EXPIRED, None):
+        return "REANALYZING..."
+    if signal.expiration_reason == ExpirationReason.PRICE_MOVED:
+        return "DO NOT CHASE"
+    return signal.expiration_message

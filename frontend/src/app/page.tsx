@@ -10,6 +10,23 @@ import { PrimarySignalCard } from "@/components/PrimarySignalCard";
 import { useLiveFeed } from "@/hooks/useLiveFeed";
 import type { LiveSignal } from "@/lib/types";
 
+const BET_STATES = new Set([
+  "STRONG_ENTRY_SIGNAL",
+  "ENTRY_SIGNAL",
+  "STRONG_BET_SIGNAL",
+  "BET_SIGNAL",
+  "BET_NOW",
+]);
+
+function needsBet(state: string) {
+  return BET_STATES.has(state);
+}
+
+function isBetSignal(signal: LiveSignal) {
+  const kind = signal.raw_signal_type || signal.signal_type;
+  return BET_STATES.has(kind);
+}
+
 export default function HomePage() {
   const { dashboard, signals, connection, wsState, serverNow, apiUrl } =
     useLiveFeed();
@@ -26,43 +43,53 @@ export default function HomePage() {
   const rankedMatches = useMemo(() => {
     const matches = dashboard?.matches ?? [];
     const group: Record<string, number> = {
+      STRONG_ENTRY_SIGNAL: 0,
       STRONG_BET_SIGNAL: 0,
+      ENTRY_SIGNAL: 1,
       BET_SIGNAL: 1,
       BET_NOW: 1,
-      CLOSE_TO_SIGNAL: 2,
-      WATCH: 3,
-      STUDYING_MATCH: 4,
-      NO_BET: 6,
+      STOP_EXIT_SIGNAL: 2,
+      SLIPPING: 3,
+      ENTRY_DEVELOPING: 4,
+      CLOSE_TO_SIGNAL: 4,
+      WATCH_CLOSELY: 5,
+      WATCH: 5,
+      SEARCHING_FOR_ENTRY: 6,
+      STUDYING_MATCH: 7,
+      HOLD: 8,
+      COOLDOWN: 9,
+      DO_NOT_ENTER: 10,
+      NO_BET: 10,
     };
     const rank = (m: (typeof matches)[number]) =>
-      (group[m.display_state] ?? 5) * 1000 - (m.read?.opportunity_score ?? 0);
+      (group[m.display_state] ?? 6) * 1000 -
+      (m.entry?.entry_score ?? m.read?.opportunity_score ?? 0);
     return [...matches].sort((a, b) => rank(a) - rank(b));
   }, [dashboard]);
 
-  const featured = rankedMatches.find((m) => m.model_probability != null) ?? null;
+  const betMatches = rankedMatches.filter((m) => needsBet(m.display_state));
 
-  const primary = useMemo(() => {
-    const actionable = signals
-      .filter((s) => {
-        const rem = s.expires_at_ms - serverNow;
-        return (
-          s.actionable &&
-          s.status === "ACTIVE" &&
-          rem > 0 &&
-          (s.raw_signal_type === "BET_NOW" ||
-            s.raw_signal_type === "BET_SIGNAL" ||
-            s.raw_signal_type === "STRONG_BET_SIGNAL" ||
-            s.signal_type === "BET_NOW" ||
-            s.signal_type === "BET_SIGNAL" ||
-            s.signal_type === "STRONG_BET_SIGNAL")
-        );
-      })
-      .sort((a, b) => b.created_at_ms - a.created_at_ms);
-    if (actionable[0]) return actionable[0];
-    // Show most recent expired for context briefly
-    const recent = [...signals].sort((a, b) => b.created_at_ms - a.created_at_ms)[0];
-    return recent || dashboard?.actionable_signals?.[0] || null;
-  }, [signals, serverNow, dashboard]);
+  const featured =
+    rankedMatches.find((m) => !needsBet(m.display_state) && m.model_probability != null) ??
+    rankedMatches.find((m) => m.model_probability != null) ??
+    null;
+
+  const betSignals = useMemo(() => {
+    const fromFeed = signals.filter((s) => {
+      const rem = s.expires_at_ms - serverNow;
+      return s.actionable && s.status === "ACTIVE" && rem > 0 && isBetSignal(s);
+    });
+    const fromMatches = betMatches
+      .map((m) => m.active_signal)
+      .filter((s): s is LiveSignal => !!s && s.actionable && isBetSignal(s));
+    const merged = [...fromFeed, ...fromMatches];
+    const seen = new Set<string>();
+    return merged.filter((s) => {
+      if (seen.has(s.signal_id)) return false;
+      seen.add(s.signal_id);
+      return true;
+    });
+  }, [signals, serverNow, betMatches]);
 
   const auth = async () => {
     if (!authMode) return;
@@ -140,38 +167,62 @@ export default function HomePage() {
         </div>
       </header>
 
-      {/* Primary signal — first viewport focus */}
       <section className="mt-6">
-        {primary ? (
-          <PrimarySignalCard
-            signal={primary}
-            serverNow={serverNow}
-            alertsEnabled={alertsEnabled}
-            onPlaced={setPlaceSignal}
-            onViewAnalysis={setAnalysisSignal}
-          />
-        ) : featured ? (
+        <div className="mb-3 flex items-baseline justify-between gap-3">
+          <h2 className="font-display text-3xl">Needs a bet</h2>
+          <span className="font-mono text-xs uppercase tracking-wider text-mist/50">
+            {betSignals.length + betMatches.filter((m) => !betSignals.some((s) => s.market_ticker === m.market_ticker)).length} ready
+          </span>
+        </div>
+        {betSignals.length > 0 || betMatches.length > 0 ? (
+          <div className="space-y-4">
+            {betSignals.map((signal) => (
+              <PrimarySignalCard
+                key={signal.signal_id}
+                signal={signal}
+                serverNow={serverNow}
+                alertsEnabled={alertsEnabled}
+                onPlaced={setPlaceSignal}
+                onViewAnalysis={setAnalysisSignal}
+              />
+            ))}
+            {betMatches
+              .filter((m) => !betSignals.some((s) => s.market_ticker === m.market_ticker))
+              .map((m) => (
+                <MatchCard
+                  key={m.market_ticker}
+                  match={m}
+                  serverNow={serverNow}
+                  snapshotServerTimeMs={dashboard?.server_time_ms ?? serverNow}
+                  maxDataAgeMs={dashboard?.max_data_age_ms ?? 5000}
+                />
+              ))}
+          </div>
+        ) : (
+          <div className="border border-dashed border-white/15 p-5 font-mono text-sm text-mist/60">
+            No match needs a bet right now. Entry signals will show here, above the rest of the board.
+          </div>
+        )}
+      </section>
+
+      {featured && betSignals.length === 0 && betMatches.length === 0 && (
+        <section className="mt-6">
           <LiveReadCard
             match={featured}
             serverNow={serverNow}
             snapshotServerTimeMs={dashboard?.server_time_ms ?? serverNow}
             marketCount={dashboard?.live_match_count ?? rankedMatches.length}
           />
-        ) : (
-          <div className="border border-white/10 bg-ink-800/40 p-8 md:p-12">
-            <p className="font-display text-4xl md:text-5xl text-mist/90">
-              {dashboard?.no_live_markets
-                ? "NO LIVE TENNIS MARKETS"
-                : "Waiting for quotes."}
-            </p>
-            <p className="mt-3 font-mono text-sm text-mist/55 uppercase tracking-wider">
-              {dashboard?.no_live_markets
-                ? "Waiting for open Kalshi tennis markets"
-                : "Markets are connected. The first scored read appears as soon as a price arrives."}
-            </p>
-          </div>
-        )}
-      </section>
+        </section>
+      )}
+
+      {!featured && betSignals.length === 0 && betMatches.length === 0 && (
+        <section className="mt-6 border border-white/10 bg-ink-800/40 p-8 md:p-12">
+          <p className="font-display text-4xl md:text-5xl text-mist/90">
+            {dashboard?.no_live_markets ? "NO LIVE TENNIS MARKETS" : "Waiting for quotes."}
+          </p>
+        </section>
+      )}
 
       {/* Matches */}
       <section className="mt-10">
@@ -187,7 +238,9 @@ export default function HomePage() {
           </div>
         ) : (
           <div className="grid gap-4 md:grid-cols-2">
-            {rankedMatches.map((m) => (
+            {rankedMatches
+              .filter((m) => !needsBet(m.display_state))
+              .map((m) => (
               <MatchCard
                 key={m.market_ticker}
                 match={m}

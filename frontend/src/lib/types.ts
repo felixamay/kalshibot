@@ -94,6 +94,7 @@ export interface MatchCard {
   data_age_ms?: number | null;
   tennis?: Record<string, unknown>;
   active_signal?: LiveSignal | null;
+  entry?: { entry_score?: number; decision?: string } | null;
 }
 
 export interface DashboardPayload {

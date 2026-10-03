@@ -205,6 +205,9 @@ class RollingMarketAnalyzer:
                 stats.liquidity = pts[0].depth_yes + pts[0].depth_no
             self.state.windows[w] = stats
 
+    def ticks_since(self, start_ms: float) -> list[TickPoint]:
+        return [tick for tick in self._ticks if tick.ts_ms >= start_ms]
+
     def snapshot(self) -> dict:
         s = self.state
         return {

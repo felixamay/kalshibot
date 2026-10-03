@@ -3,6 +3,7 @@
 from functools import lru_cache
 from typing import Optional
 
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -11,6 +12,7 @@ class Settings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",
+        populate_by_name=True,
     )
 
     # Application
@@ -46,7 +48,13 @@ class Settings(BaseSettings):
 
     # Observation & signal strategy
     # Confidence is signal confidence, not the player's win probability.
-    initial_observation_seconds: int = 300
+    initial_observation_seconds: int = Field(
+        default=300,
+        validation_alias=AliasChoices(
+            "INITIAL_OBSERVATION_SECONDS",
+            "INITIAL_STUDY_SECONDS",
+        ),
+    )
     watch_confidence: float = 72.0
     min_bet_confidence: float = 80.0
     strong_bet_confidence: float = 90.0
@@ -59,6 +67,21 @@ class Settings(BaseSettings):
     entry_confirmation_count: int = 3
     max_signals_per_match: int = 4
     reentry_cooldown_seconds: int = 60
+    # Entry timing is a 0–100 score against this match's own baseline.
+    watch_entry_score: float = 70.0
+    entry_signal_score: float = 78.0
+    strong_entry_score: float = 88.0
+    watch_slip_score: float = 45.0
+    slipping_score: float = 65.0
+    stop_exit_score: float = 75.0
+    exit_confirmation_count: int = 3
+    # Profit protection tightens after a gain measured in baseline-volatility units.
+    profit_protect_moderate_vols: float = 2.0
+    profit_protect_strong_vols: float = 4.0
+    profit_protect_moderate_multiplier: float = 1.25
+    profit_protect_strong_multiplier: float = 1.6
+    emergency_move_vols: float = 3.5
+    baseline_volatility_floor: float = 0.75
 
     # Signal TTL
     min_signal_ttl_seconds: float = 2.0
@@ -99,6 +122,25 @@ class Settings(BaseSettings):
     weight_spread: float = 0.05
     weight_trend: float = 0.04
     weight_volatility_risk: float = 0.03
+
+    # Entry-score weights. Not claimed to be optimal.
+    weight_entry_strength: float = 0.25
+    weight_entry_price: float = 0.20
+    weight_entry_book: float = 0.15
+    weight_entry_momentum: float = 0.15
+    weight_entry_flow: float = 0.10
+    weight_entry_liquidity: float = 0.05
+    weight_entry_spread: float = 0.05
+    weight_entry_reversal: float = 0.05
+
+    # Slip-score weights. Not claimed to be optimal.
+    weight_slip_price: float = 0.25
+    weight_slip_book: float = 0.20
+    weight_slip_momentum: float = 0.20
+    weight_slip_flow: float = 0.10
+    weight_slip_liquidity: float = 0.10
+    weight_slip_model: float = 0.10
+    weight_slip_spread: float = 0.05
 
     # Rolling windows (ms)
     window_sizes_ms: str = "250,500,1000,2000,5000,10000,30000,60000,180000,300000"
