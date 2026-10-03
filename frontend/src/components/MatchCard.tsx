@@ -1,9 +1,41 @@
 "use client";
 
+import {
+  formatMatchTimer,
+  matchClockEndsMs,
+  remainingFromTimestamps,
+} from "@/lib/clock";
 import type { MatchCard as MatchCardType } from "@/lib/types";
 
-export function MatchCard({ match }: { match: MatchCardType }) {
+export function MatchCard({
+  match,
+  serverNow,
+  snapshotServerTimeMs,
+  maxDataAgeMs = 5000,
+}: {
+  match: MatchCardType;
+  serverNow: number;
+  snapshotServerTimeMs: number;
+  maxDataAgeMs?: number;
+}) {
   const studying = match.display_state === "STUDYING_MATCH";
+  const observationEnds = matchClockEndsMs(
+    match.observation_ends_ms,
+    snapshotServerTimeMs,
+    match.observation_remaining_ms
+  );
+  const observationRemaining = remainingFromTimestamps(observationEnds, serverNow);
+  const cooldownEnds = match.cooldown_until_ms
+    ? match.cooldown_until_ms
+    : snapshotServerTimeMs + (match.cooldown_remaining_ms || 0);
+  const cooldownRemaining =
+    cooldownEnds > snapshotServerTimeMs
+      ? remainingFromTimestamps(cooldownEnds, serverNow)
+      : 0;
+  const dataAgeMs =
+    match.quote_updated_at_ms && match.quote_updated_at_ms > 0
+      ? Math.max(0, serverNow - match.quote_updated_at_ms)
+      : match.data_age_ms;
   const tennisNote =
     match.tennis && match.tennis.available
       ? "TENNIS-ENHANCED"
@@ -82,19 +114,33 @@ export function MatchCard({ match }: { match: MatchCardType }) {
           <p className="font-mono text-xs uppercase tracking-widest text-signal-mint">
             Studying Match
           </p>
-          <p className="font-display text-3xl text-mist mt-1">
-            {match.observation_remaining_display}
+          <p className="font-mono text-4xl tabular-nums tracking-tight text-mist mt-1">
+            {formatMatchTimer(observationRemaining)}
             <span className="font-mono text-sm ml-2 text-mist/50">REMAINING</span>
           </p>
           <p className="text-xs text-mist/50 mt-1">
-            No BET NOW during initial observation.
+            {observationRemaining > 0
+              ? "No BET NOW during initial observation."
+              : "Observation complete. Reanalyzing."}
           </p>
         </div>
       )}
 
-      {match.data_age_ms != null && match.data_age_ms > 1500 && (
+      {cooldownRemaining > 0 && (
+        <div className="mt-4 border border-white/15 bg-ink-950/60 px-3 py-3">
+          <p className="font-mono text-xs uppercase tracking-widest text-mist/60">
+            Cooldown
+          </p>
+          <p className="font-mono text-3xl tabular-nums tracking-tight text-mist mt-1">
+            {formatMatchTimer(cooldownRemaining)}
+            <span className="font-mono text-sm ml-2 text-mist/50">REMAINING</span>
+          </p>
+        </div>
+      )}
+
+      {dataAgeMs != null && dataAgeMs > maxDataAgeMs && (
         <div className="mt-3 border border-signal-coral/40 px-3 py-2 font-mono text-xs text-signal-coral">
-          DATA DELAY · Last update {(match.data_age_ms / 1000).toFixed(1)}s ago · DO NOT BET
+          DATA DELAY · Last update {(dataAgeMs / 1000).toFixed(1)}s ago · DO NOT BET
         </div>
       )}
 

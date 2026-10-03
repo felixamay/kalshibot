@@ -56,10 +56,13 @@ export interface MatchCard {
   estimated_edge?: number | null;
   analysis_mode: string;
   display_state: string;
+  observation_ends_ms?: number;
   observation_remaining_ms: number;
   observation_remaining_display: string;
   signals_emitted: number;
+  cooldown_until_ms?: number;
   cooldown_remaining_ms: number;
+  quote_updated_at_ms?: number | null;
   data_age_ms?: number | null;
   tennis?: Record<string, unknown>;
   active_signal?: LiveSignal | null;
@@ -74,4 +77,5 @@ export interface DashboardPayload {
   signal_history: LiveSignal[];
   no_live_markets: boolean;
   message?: string | null;
+  max_data_age_ms?: number;
 }

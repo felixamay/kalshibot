@@ -54,3 +54,24 @@ export function formatCountdown(remainingMs: number): string {
   }
   return (remainingMs / 1000).toFixed(1);
 }
+
+/** MM:SS.t from an absolute end timestamp. Tenths update every 100ms. Never negative. */
+export function formatMatchTimer(remainingMs: number): string {
+  const ms = Math.max(0, remainingMs);
+  const totalTenths = Math.floor(ms / 100);
+  const tenths = totalTenths % 10;
+  const totalSeconds = Math.floor(totalTenths / 10);
+  const seconds = totalSeconds % 60;
+  const minutes = Math.floor(totalSeconds / 60);
+  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}.${tenths}`;
+}
+
+/** End timestamp for a match clock. Prefer the server absolute; otherwise reconstruct once from the snapshot. */
+export function matchClockEndsMs(
+  absoluteEndsMs: number | undefined,
+  snapshotServerTimeMs: number,
+  remainingAtSnapshotMs: number
+): number {
+  if (absoluteEndsMs && absoluteEndsMs > 0) return absoluteEndsMs;
+  return snapshotServerTimeMs + Math.max(0, remainingAtSnapshotMs || 0);
+}

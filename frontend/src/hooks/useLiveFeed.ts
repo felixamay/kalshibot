@@ -139,11 +139,34 @@ export function useLiveFeed() {
     };
   }, [upsertSignal]);
 
-  // High-frequency server-now tick for countdowns (100ms)
+  // High-frequency server-now tick for countdowns (100ms).
+  // Match timers recompute from absolute end timestamps on this tick.
   useEffect(() => {
     const id = setInterval(() => {
       setServerNow(clockRef.current.serverNow());
     }, 100);
+    return () => clearInterval(id);
+  }, []);
+
+  // Refresh match state about once a second. The countdown itself does not
+  // wait on this — it runs from observation_ends_ms and serverNow.
+  useEffect(() => {
+    const id = setInterval(() => {
+      const ws = wsRef.current;
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(
+          JSON.stringify({ type: "get_dashboard", client_send_ms: Date.now() })
+        );
+        return;
+      }
+      fetch(`${API_URL}/api/dashboard`)
+        .then((r) => r.json())
+        .then((d: DashboardPayload) => {
+          setDashboard(d);
+          if (d.connection_status) setConnection(d.connection_status);
+        })
+        .catch(() => undefined);
+    }, 1000);
     return () => clearInterval(id);
   }, []);
 

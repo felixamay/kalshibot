@@ -159,7 +159,13 @@ export default function HomePage() {
         ) : (
           <div className="grid gap-4 md:grid-cols-2">
             {dashboard.matches.map((m) => (
-              <MatchCard key={m.market_ticker} match={m} />
+              <MatchCard
+                key={m.market_ticker}
+                match={m}
+                serverNow={serverNow}
+                snapshotServerTimeMs={dashboard.server_time_ms}
+                maxDataAgeMs={dashboard.max_data_age_ms ?? 5000}
+              />
             ))}
           </div>
         )}

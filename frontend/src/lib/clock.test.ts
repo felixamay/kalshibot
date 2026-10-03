@@ -8,6 +8,8 @@
 
 import {
   formatCountdown,
+  formatMatchTimer,
+  matchClockEndsMs,
   remainingFromTimestamps,
   urgencyFromRemaining,
   ClockSynchronizer,
@@ -54,5 +56,22 @@ describe("countdown timestamps", () => {
     const c = new ClockSynchronizer();
     c.recordSync(1000, 1100, 1050);
     expect(Math.abs(c.offsetMs - 75)).toBeLessThan(1);
+  });
+
+  test("match timer ticks from absolute end, including tenths", () => {
+    const ends = 300_000;
+    expect(formatMatchTimer(remainingFromTimestamps(ends, 0))).toBe("05:00.0");
+    expect(formatMatchTimer(remainingFromTimestamps(ends, 100))).toBe("04:59.9");
+    expect(formatMatchTimer(remainingFromTimestamps(ends, 272_400))).toBe("00:27.6");
+    expect(formatMatchTimer(remainingFromTimestamps(ends, 400_000))).toBe("00:00.0");
+  });
+
+  test("match clock end is stable across later server times", () => {
+    const ends = matchClockEndsMs(1_000_000 + 300_000, 1_000_000, 300_000);
+    expect(ends).toBe(1_300_000);
+    expect(remainingFromTimestamps(ends, 1_001_500)).toBe(298_500);
+    const reconstructed = matchClockEndsMs(undefined, 1_000_000, 300_000);
+    expect(reconstructed).toBe(1_300_000);
+    expect(remainingFromTimestamps(reconstructed, 1_000_000 + 2_000)).toBe(298_000);
   });
 });

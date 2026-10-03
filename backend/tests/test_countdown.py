@@ -373,6 +373,47 @@ def test_confidence_is_not_deadlocked_by_confirmation_count():
     asyncio.get_event_loop().run_until_complete(attempt())
 
 
+def test_match_observation_timer_is_absolute():
+    """Live match clocks must be recomputed from an absolute end, not a frozen MM:SS string."""
+    settings = Settings(
+        initial_observation_seconds=300,
+        reentry_cooldown_seconds=60,
+        database_url="sqlite+aiosqlite:///:memory:",
+    )
+    engine = SignalEngine(settings)
+    started = time.time() * 1000.0
+    engine.register_match(
+        match_id="m1",
+        player_a="Alcaraz",
+        player_b="Sinner",
+        tournament="Test Open",
+        market_ticker="KXTEST",
+        market_db_id="mk1",
+        now_ms=started,
+    )
+    payload = engine.dashboard_payload()
+    card = payload["matches"][0]
+    assert card["observation_ends_ms"] == started + 300_000
+    server_now = payload["server_time_ms"]
+    assert card["observation_remaining_ms"] == pytest.approx(
+        max(0.0, card["observation_ends_ms"] - server_now), abs=5
+    )
+    # A later client clock shortens the display without a new dashboard payload.
+    later = server_now + 1500
+    client_remaining = max(0.0, card["observation_ends_ms"] - later)
+    assert card["observation_remaining_ms"] - client_remaining == pytest.approx(1500, abs=20)
+    assert client_remaining >= 0
+
+    engine.start_cooldown("KXTEST", now_ms=server_now)
+    cooled_payload = engine.dashboard_payload()
+    cooled = cooled_payload["matches"][0]
+    assert cooled["cooldown_until_ms"] == pytest.approx(server_now + 60_000, abs=1)
+    assert cooled["cooldown_remaining_ms"] == pytest.approx(
+        max(0.0, cooled["cooldown_until_ms"] - cooled_payload["server_time_ms"]), abs=5
+    )
+    assert max(0.0, cooled["cooldown_until_ms"] - (server_now + 61_000)) == 0
+
+
 def test_ws_subscribe_allows_orderbook_and_blocks_orders():
     from app.services.kalshi.websocket import KalshiWebSocketClient
 

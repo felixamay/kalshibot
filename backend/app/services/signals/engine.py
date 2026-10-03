@@ -583,10 +583,15 @@ class SignalEngine:
                     "confidence": None,
                     "analysis_mode": ctx.analysis_mode,
                     "display_state": ctx.display_state.value,
+                    "observation_ends_ms": ctx.observation_ends_ms,
                     "observation_remaining_ms": obs_remaining,
                     "observation_remaining_display": format_mmss(obs_remaining),
                     "signals_emitted": ctx.signals_emitted,
+                    "cooldown_until_ms": ctx.cooldown_until_ms,
                     "cooldown_remaining_ms": max(0.0, ctx.cooldown_until_ms - now),
+                    "quote_updated_at_ms": (
+                        market.last_update_ms if market and market.last_update_ms else None
+                    ),
                     "data_age_ms": market.data_age_ms if market else None,
                     "tennis": ctx.tennis.to_dict() if ctx.tennis else {"available": False, "analysis_note": "MARKET-ONLY ANALYSIS"},
                     "active_signal": active.to_public_dict(now) if active else None,
@@ -611,6 +616,7 @@ class SignalEngine:
             "signal_history": self.snap.signal_history[-50:],
             "no_live_markets": len(self.snap.matches) == 0,
             "message": "NO LIVE TENNIS MARKETS" if len(self.snap.matches) == 0 else None,
+            "max_data_age_ms": self.settings.max_data_age_ms,
         }
 
 
