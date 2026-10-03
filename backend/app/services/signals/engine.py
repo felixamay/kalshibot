@@ -349,10 +349,7 @@ class SignalEngine:
         prob = ctx.last_model
         confidence = ctx.last_confidence
         if observing:
-            left = max(0.0, ctx.observation_ends_ms - now)
-            parts.append(
-                f"Observation has {format_mmss(left)} left. No BET NOW until that clock ends."
-            )
+            parts.append("No BET NOW until the observation clock ends.")
         if prob is None or confidence is None:
             parts.append("Waiting for a usable Kalshi quote.")
             return " ".join(parts)
