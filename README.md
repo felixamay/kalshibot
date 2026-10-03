@@ -23,6 +23,23 @@ The Kalshi client is read-only. Write methods (`POST`/`PUT`/`PATCH`/`DELETE`) ar
 
 ---
 
+## Live deployment
+
+**Firebase project:** `courledge-5716a4` (CourtEdge Live) — newly created
+
+**Hosting (live now):**
+- https://courledge-5716a4.web.app
+- https://courledge-5716a4.firebaseapp.com
+
+**Console:** https://console.firebase.google.com/project/courledge-5716a4/overview
+
+**Custom domain:** Firebase Console → Hosting → Add custom domain
+
+**API note:** The hosted UI currently talks to a temporary public tunnel in front of the API.
+For a permanent production API, enable billing on the GCP project and deploy the FastAPI backend to Cloud Run (or another host), then rebuild Hosting with `NEXT_PUBLIC_API_URL` / `NEXT_PUBLIC_WS_URL`.
+
+---
+
 ## Firebase Hosting (custom domain)
 
 Firebase CLI is configured in this repo (`firebase.json`, `.firebaserc`, `scripts/firebase-deploy.sh`).
