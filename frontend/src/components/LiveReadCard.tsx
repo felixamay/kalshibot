@@ -137,10 +137,9 @@ export function LiveReadCard({
         </ul>
       )}
       <p className="mt-3 font-mono text-[11px] uppercase tracking-wider text-mist/40">
-        A pattern entry needs a setup this match has already shown, confirmation,
-        and a book that still agrees. One price spike is not a bet. Nothing here
-        is a guaranteed win, and every order is placed by you on Kalshi.
-        WATCH is not an instruction to bet.
+        A pattern that exists and is about to begin is the bet alert, including during the
+        study clock. You bet that player yourself on Kalshi. A late pattern is not a chase.
+        Nothing here is a guaranteed win.
       </p>
     </section>
   );

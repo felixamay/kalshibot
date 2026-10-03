@@ -279,7 +279,17 @@ class SignalEngine:
                 ctx.hold_reason = "Market is suspended. No entry."
             return
 
-        # Observation period — learn patterns, but never a BET NOW.
+        # A detected pattern that is about to begin alerts immediately.
+        # The observation clock still runs, but it does not hide that alert.
+        if now < ctx.observation_ends_ms and self.settings.pattern_engine_enabled:
+            if ctx.last_model is not None and ctx.last_confidence is not None:
+                await self._evaluate_entry(ctx, market, now)
+                if ctx.display_state in (
+                    SignalType.PATTERN_ENTRY_SIGNAL,
+                    SignalType.STRONG_PATTERN_SIGNAL,
+                ):
+                    return
+
         if now < ctx.observation_ends_ms:
             ctx.analysis_mode = AnalysisMode.OBSERVING.value
             ctx.display_state = SignalType.STUDYING_MATCH
@@ -299,13 +309,16 @@ class SignalEngine:
                 )
                 ctx.last_read = preview
                 ctx.hold_reason = (
-                    "STUDYING MATCH. No BET SIGNAL until the observation clock ends. "
-                    "Learning this match's own volatility, spread, liquidity, and repeating patterns. "
+                    "STUDYING MATCH. The observation clock is still learning this match. "
+                    "A pattern that exists and is about to begin is alerted immediately. "
                     f"Patterns recorded: {learned}. "
                     + preview.explanation
                 )
             else:
-                ctx.hold_reason = "No BET SIGNAL until the observation clock ends."
+                ctx.hold_reason = (
+                    "STUDYING MATCH. The observation clock is still learning this match. "
+                    "A pattern that exists and is about to begin is alerted immediately."
+                )
             self._remember_phase(ctx, SignalType.STUDYING_MATCH, now)
             return
 
@@ -332,7 +345,10 @@ class SignalEngine:
             self._remember_phase(ctx, SignalType.COOLDOWN, now)
             return
 
-        if ctx.signals_emitted >= self.settings.max_signals_per_match:
+        if (
+            not self.settings.pattern_engine_enabled
+            and ctx.signals_emitted >= self.settings.max_signals_per_match
+        ):
             ctx.display_state = SignalType.DO_NOT_ENTER
             ctx.hold_reason = (
                 f"This match already produced {ctx.signals_emitted} signals. "
@@ -552,13 +568,6 @@ class SignalEngine:
         ctx.hold_reason = view.explanation
         self._remember_phase(ctx, state, now)
         if view.decision in _PATTERN_ENTRIES:
-            if ctx.signals_emitted >= self.settings.max_signals_per_match:
-                ctx.display_state = SignalType.DO_NOT_ENTER
-                ctx.hold_reason = (
-                    f"This match already produced {ctx.signals_emitted} signals. "
-                    f"The cap is {self.settings.max_signals_per_match}."
-                )
-                return
             self.pattern_engine.record_signal(
                 view.pattern_type,
                 similarity=view.similarity,

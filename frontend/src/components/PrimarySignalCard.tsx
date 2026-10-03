@@ -35,7 +35,9 @@ export function PrimarySignalCard({
   );
 
   const showActionable = active && !cd.expired;
-  const label = showActionable ? signal.raw_signal_type || signal.signal_type : signal.display_label;
+  const label = showActionable
+    ? signal.display_label || (signal.raw_signal_type || signal.signal_type || "").replace(/_/g, " ")
+    : signal.display_label;
   const sub = showActionable ? null : signal.display_sublabel;
 
   const urgencyText =

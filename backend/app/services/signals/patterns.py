@@ -1600,7 +1600,16 @@ class PatternEngine:
                 ["Do not chase — move already advanced."],
             )
         if label not in ("POTENTIAL", "RECURRING"):
-            blockers.append("Pattern needs another repetition before it can be traded")
+            reasons.append("This pattern has been seen. Repetition is not required before the alert.")
+        else:
+            reasons.append("I have seen this market behave this way before.")
+        reasons.append("The same pattern appears to be forming.")
+        market_ok = (
+            book.fresh
+            and not book.extreme
+            and book.liquidity_quality not in ("LOW", "VERY_LOW")
+            and book.spread_quality not in ("POOR", "VERY_POOR")
+        )
         if not book.fresh:
             blockers.append("Market data is stale")
         if book.extreme:
@@ -1609,50 +1618,22 @@ class PatternEngine:
             blockers.append("Liquidity is not acceptable")
         if book.spread_quality in ("POOR", "VERY_POOR"):
             blockers.append("Spread is not acceptable")
-        if label in ("POTENTIAL", "RECURRING"):
-            reasons.append("I have seen this market behave this way several times.")
-        reasons.append("The same pattern appears to be forming.")
-        quality_ok = not blockers or blockers == ["Pattern needs another repetition before it can be traded"]
-        # Recompute quality strictly.
-        market_ok = (
-            book.fresh
-            and not book.extreme
-            and book.liquidity_quality not in ("LOW", "VERY_LOW")
-            and book.spread_quality not in ("POOR", "VERY_POOR")
-        )
-        repeated = label in ("POTENTIAL", "RECURRING")
-        confirmed = confirmation_count >= settings.pattern_confirmation_count and confirming_signals >= 3
-        if (
-            repeated
-            and market_ok
-            and confirmed
-            and entry_score >= settings.strong_pattern_entry_score
-            and confidence >= settings.strong_pattern_confidence
-            and confirming_signals >= 5
-            and book.liquidity_quality in ("HIGH", "GOOD")
-            and book.spread_quality in ("EXCELLENT", "GOOD")
-            and stage in ("EARLY", "DEVELOPING")
-        ):
-            reasons.append("Pattern confirmed. Entry window open.")
-            return "STRONG_PATTERN_SIGNAL", True, [], reasons
-        if (
-            repeated
-            and market_ok
-            and confirmed
-            and entry_score >= settings.pattern_entry_score
-            and confidence >= settings.min_pattern_confidence
-            and stage in ("EARLY", "DEVELOPING", "MATURE")
-        ):
-            reasons.append("Pattern confirmed. Entry window open.")
+        # A pattern that exists and is still early is the alert. Do not wait for
+        # three confirmations or three historical repeats.
+        if market_ok and stage in ("EARLY", "DEVELOPING"):
+            reasons.append("Pattern exists and is about to begin. Bet this player.")
+            if (
+                entry_score >= settings.strong_pattern_entry_score
+                and confidence >= settings.strong_pattern_confidence
+                and book.liquidity_quality in ("HIGH", "GOOD")
+                and book.spread_quality in ("EXCELLENT", "GOOD")
+            ):
+                return "STRONG_PATTERN_SIGNAL", True, [], reasons
             return "PATTERN_ENTRY_SIGNAL", True, [], reasons
-        if entry_score >= settings.pattern_watch_score and repeated and market_ok:
-            reasons.append("Not confirmed yet." if confirmation_count == 0 else "Confirmation is increasing.")
-            blockers.append(f"Confirmation {confirmation_count}/{settings.pattern_confirmation_count}")
-            return "PATTERN_WATCH", False, blockers, reasons
-        if not quality_ok:
+        if not market_ok:
             reasons.append("Waiting for the book, spread, and liquidity to agree.")
         else:
-            reasons.append("Waiting for confirmation.")
+            reasons.append("Pattern has already moved. Do not chase a late stage.")
         return "PATTERN_DEVELOPING", False, blockers, reasons
 
     def _explain(self, **kwargs: Any) -> str:
@@ -1673,7 +1654,11 @@ class PatternEngine:
             "Observed success is not a guaranteed future probability."
         )
         if decision == "PATTERN_ENTRY_SIGNAL":
-            return "PATTERN ENTRY SIGNAL. " + base + " Entry window open. You place the bet manually."
+            return (
+                "PATTERN ABOUT TO BEGIN. Bet this player. "
+                + base
+                + " The five-minute study does not delay this alert. You place the bet manually."
+            )
         if decision == "STRONG_PATTERN_SIGNAL":
             return "STRONG PATTERN SIGNAL. " + base + " Not a guaranteed result. You place the bet manually."
         if decision == "PATTERN_WATCH":

@@ -168,7 +168,7 @@ export function MatchCard({
           </p>
           <p className="text-xs text-mist/50 mt-1">
             {observationRemaining > 0
-              ? "No BET SIGNAL until the observation clock ends."
+              ? "No pattern to bet yet. One that is about to begin appears in Needs a bet without waiting out this clock."
               : "Observation complete. Reanalyzing."}
           </p>
         </div>

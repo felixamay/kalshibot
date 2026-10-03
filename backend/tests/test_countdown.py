@@ -464,7 +464,7 @@ async def test_observation_publishes_a_real_read_without_a_bet():
     assert card["estimated_edge"] is not None
     assert card["confidence"] is not None
     assert "observation clock" in card["hold_reason"]
-    assert "No BET SIGNAL" in card["hold_reason"]
+    assert "about to begin" in card["hold_reason"]
     assert payload["actionable_signals"] == []
 
 

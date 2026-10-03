@@ -104,45 +104,34 @@ def test_two_occurrences_are_potential_and_three_are_recurring():
     assert again.occurrences == 3
 
 
-def test_entry_requires_confirmation_and_ignores_a_single_sighting():
+def test_a_pattern_about_to_begin_alerts_without_three_confirmations():
+    """One existing early pattern is the alert. Three confirmations are not required."""
     engine = PatternEngine(settings())
     seed_pullback(engine, "KX", 1_000, 52, 49, 55, vol=1)
     once = engine.assess(
         ticker="KX",
         points=developing_pullback(),
         book=early_book(58),
-        confirmation_count=3,
+        confirmation_count=0,
         baseline_volatility_override=1,
         player_a="Player A",
     )
-    assert once.repetition_label == "OBSERVED ONLY"
-    assert once.decision not in ("PATTERN_ENTRY_SIGNAL", "STRONG_PATTERN_SIGNAL")
+    assert once.pattern_type == "PULLBACK_RECOVERY"
+    assert once.stage in ("EARLY", "DEVELOPING")
+    assert once.decision == "PATTERN_ENTRY_SIGNAL", once.explanation
+    assert once.tradeable is True
 
-    for index in range(3):
-        seed_pullback(engine, "KX2", 2_000 + index, 52 + index, 49 + index, 56 + index, vol=1)
-    waiting = engine.assess(
-        ticker="KX2",
+    fresh = PatternEngine(settings())
+    forming = fresh.assess(
+        ticker="NEW",
         points=developing_pullback(),
         book=early_book(58),
-        confirmation_count=1,
+        confirmation_count=0,
         baseline_volatility_override=1,
         player_a="Player A",
     )
-    assert waiting.decision in ("PATTERN_WATCH", "PATTERN_DEVELOPING")
-    assert waiting.decision not in ("PATTERN_ENTRY_SIGNAL", "STRONG_PATTERN_SIGNAL")
-    ready = engine.assess(
-        ticker="KX2",
-        points=developing_pullback(),
-        book=early_book(58),
-        confirmation_count=3,
-        baseline_volatility_override=1,
-        player_a="Player A",
-    )
-    assert ready.pattern_type == "PULLBACK_RECOVERY"
-    assert ready.stage in ("EARLY", "DEVELOPING", "MATURE")
-    assert ready.decision == "PATTERN_ENTRY_SIGNAL", ready.explanation
-    assert ready.confidence >= 70
-    assert ready.entry_score >= 75
+    assert forming.pattern_type == "PULLBACK_RECOVERY"
+    assert forming.decision == "PATTERN_ENTRY_SIGNAL", forming.explanation
 
 
 def test_late_and_completed_patterns_do_not_trigger_entry():
@@ -382,3 +371,52 @@ async def test_engine_emits_pattern_entry_after_repeated_pullbacks():
     assert emitted[0].pattern_name == "Pullback + Recovery"
     assert emitted[0].maximum_entry_price >= emitted[0].market_price
     assert emitted[0].expires_at_ms > emitted[0].created_at_ms
+
+
+@pytest.mark.asyncio
+async def test_study_clock_does_not_delay_a_pattern_that_is_about_to_begin():
+    s = settings()
+    s.initial_observation_seconds = 300
+    engine = SignalEngine(s)
+    engine.snap.connection_status = ConnectionStatus.CONNECTED
+    now = time.time() * 1000.0
+    engine.register_match(
+        match_id="m1",
+        player_a="Player A",
+        player_b="Player B",
+        tournament="Test",
+        market_ticker="KXTEST",
+        market_db_id="mk1",
+        now_ms=now,
+    )
+
+    def fake_estimate(**kwargs):
+        return ProbabilityResult(
+            player="Player A",
+            direction="YES",
+            model_win_probability=0.55,
+            executable_market_probability=0.5,
+            raw_edge=0.05,
+            estimated_net_edge=0.04,
+            source="tennis_enhanced",
+        )
+
+    engine.prob_model.estimate = fake_estimate  # type: ignore[method-assign]
+    seed_pullback(engine.pattern_engine, "KXTEST", now, 56, 53, 60, vol=1)
+    for price in (60, 59, 58, 57, 57.4, 58):
+        await engine.on_market_update(
+            "KXTEST",
+            yes_bid=price - 0.5,
+            yes_ask=price + 0.5,
+            depth_yes=1600,
+            depth_no=700,
+            imbalance=0.32,
+            status="OPEN",
+        )
+    payload = engine.dashboard_payload()
+    card = payload["matches"][0]
+    assert card["observation_remaining_ms"] > 60_000
+    assert card["display_state"] in ("PATTERN_ENTRY_SIGNAL", "STRONG_PATTERN_SIGNAL")
+    assert payload["actionable_signals"], card["hold_reason"]
+    assert payload["actionable_signals"][0]["player"] == "Player A"
+    assert "Pullback" in (payload["actionable_signals"][0].get("pattern_name") or "")

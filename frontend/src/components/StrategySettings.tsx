@@ -90,7 +90,7 @@ const FIELDS: Array<{ key: string; label: string; tip: string; step: string }> =
   {
     key: "pattern_confirmation_count",
     label: "Pattern confirmations",
-    tip: "How many confirming updates a setup needs. One similar wiggle is not enough.",
+    tip: "A pattern that exists and is about to begin alerts without waiting for this count.",
     step: "1",
   },
   {
