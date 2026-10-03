@@ -277,10 +277,10 @@ export default function HomePage() {
         </section>
       )}
 
-      {!featured && betSignals.length === 0 && betMatches.length === 0 && (
+      {dashboard && !featured && betSignals.length === 0 && betMatches.length === 0 && (
         <section className="mt-6 border border-white/10 bg-ink-800/40 p-8 md:p-12">
           <p className="font-display text-4xl md:text-5xl text-mist/90">
-            {dashboard?.no_live_markets ? "NO LIVE TENNIS MARKETS" : "Waiting for quotes."}
+            {dashboard.no_live_markets ? "NO LIVE TENNIS MARKETS" : "Waiting for quotes."}
           </p>
         </section>
       )}
@@ -293,7 +293,11 @@ export default function HomePage() {
             {dashboard?.live_match_count ?? 0} markets
           </span>
         </div>
-        {dashboard?.no_live_markets || !dashboard?.matches?.length ? (
+        {dashboard == null ? (
+          <div className="border border-dashed border-white/15 p-8 text-center font-mono text-sm text-mist/60">
+            Restoring the live board…
+          </div>
+        ) : dashboard.no_live_markets || !dashboard.matches?.length ? (
           <div className="border border-dashed border-white/15 p-8 text-center font-mono text-sm text-mist/60">
             NO LIVE TENNIS MARKETS
           </div>

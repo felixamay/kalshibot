@@ -394,6 +394,7 @@ def test_match_observation_timer_is_absolute():
     payload = engine.dashboard_payload()
     card = payload["matches"][0]
     assert card["observation_ends_ms"] == started + 300_000
+    assert "market_snapshot" not in card
     server_now = payload["server_time_ms"]
     assert card["observation_remaining_ms"] == pytest.approx(
         max(0.0, card["observation_ends_ms"] - server_now), abs=5

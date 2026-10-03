@@ -73,8 +73,15 @@ app.include_router(router, prefix="/api")
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket) -> None:
     await hub.connect(ws)
-    # Send initial dashboard + clock sync
+    # Connection status first, then the board. A refresh should not sit on
+    # DISCONNECTED while the match list is serialized.
     if engine:
+        await ws.send_json(
+            {
+                "type": "connection",
+                "payload": {"status": engine.snap.connection_status.value},
+            }
+        )
         await ws.send_json(
             {
                 "type": "dashboard",

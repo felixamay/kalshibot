@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ClockSynchronizer } from "@/lib/clock";
 import type { DashboardPayload, LiveSignal } from "@/lib/types";
 
@@ -8,19 +8,45 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 const WS_URL =
   process.env.NEXT_PUBLIC_WS_URL ||
   API_URL.replace(/^http/, "ws") + "/ws";
+const BOARD_KEY = "kt_board";
+
+function readCachedBoard(): DashboardPayload | null {
+  try {
+    const raw = sessionStorage.getItem(BOARD_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as DashboardPayload;
+    if (!parsed || !Array.isArray(parsed.matches)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
 
 export function useLiveFeed() {
   const [dashboard, setDashboard] = useState<DashboardPayload | null>(null);
   const [signals, setSignals] = useState<Record<string, LiveSignal>>({});
+  // A refresh used to paint DISCONNECTED until the full board downloaded.
   const [connection, setConnection] = useState<
     "CONNECTED" | "RECONNECTING" | "DISCONNECTED"
-  >("DISCONNECTED");
+  >("RECONNECTING");
   const [wsState, setWsState] = useState<
     "CONNECTED" | "RECONNECTING" | "DISCONNECTED"
-  >("DISCONNECTED");
+  >("RECONNECTING");
   const clockRef = useRef(new ClockSynchronizer());
   const wsRef = useRef<WebSocket | null>(null);
+  const boardSaveAt = useRef(0);
   const [serverNow, setServerNow] = useState(() => Date.now());
+
+  const rememberBoard = useCallback((payload: DashboardPayload, force = false) => {
+    const now = Date.now();
+    if (!force && now - boardSaveAt.current < 4000) return;
+    boardSaveAt.current = now;
+    try {
+      sessionStorage.setItem(BOARD_KEY, JSON.stringify(payload));
+    } catch {
+      /* quota or private mode */
+    }
+  }, []);
 
   const upsertSignal = useCallback((sig: LiveSignal) => {
     setSignals((prev) => {
@@ -49,6 +75,22 @@ export function useLiveFeed() {
       return next;
     });
   }, []);
+
+  const applyDashboard = useCallback(
+    (payload: DashboardPayload) => {
+      setDashboard(payload);
+      if (payload.connection_status) setConnection(payload.connection_status);
+      if (clockRef.current.lastSyncAt === 0 && payload.server_time_ms) {
+        const recv = Date.now();
+        clockRef.current.offsetMs = payload.server_time_ms - recv;
+        clockRef.current.lastSyncAt = recv;
+        setServerNow(clockRef.current.serverNow());
+      }
+      for (const s of payload.actionable_signals || []) upsertSignal(s);
+      rememberBoard(payload);
+    },
+    [rememberBoard, upsertSignal]
+  );
 
   useEffect(() => {
     let stopped = false;
@@ -88,11 +130,7 @@ export function useLiveFeed() {
             );
             setServerNow(clockRef.current.serverNow());
           } else if (msg.type === "dashboard") {
-            setDashboard(msg.payload);
-            setConnection(msg.payload.connection_status);
-            for (const s of msg.payload.actionable_signals || []) {
-              upsertSignal(s);
-            }
+            applyDashboard(msg.payload);
           } else if (msg.type === "signal") {
             upsertSignal(msg.payload);
           } else if (msg.type === "connection") {
@@ -108,9 +146,10 @@ export function useLiveFeed() {
       };
 
       ws.onclose = () => {
-        setWsState("DISCONNECTED");
         if (heartbeatTimer) clearInterval(heartbeatTimer);
-        const delay = Math.min(1000 * 2 ** retry, 15000);
+        if (stopped) return;
+        setWsState("RECONNECTING");
+        const delay = Math.min(500 * 2 ** retry, 8000);
         retry += 1;
         setTimeout(connect, delay);
       };
@@ -122,13 +161,17 @@ export function useLiveFeed() {
 
     connect();
 
-    // REST fallback for initial load
+    fetch(`${API_URL}/api/health`)
+      .then((r) => r.json())
+      .then((health: { connection_status?: DashboardPayload["connection_status"] }) => {
+        if (!stopped && health.connection_status) setConnection(health.connection_status);
+      })
+      .catch(() => undefined);
+
     fetch(`${API_URL}/api/dashboard`)
       .then((r) => r.json())
       .then((d: DashboardPayload) => {
-        setDashboard(d);
-        setConnection(d.connection_status);
-        for (const s of d.actionable_signals || []) upsertSignal(s);
+        if (!stopped) applyDashboard(d);
       })
       .catch(() => undefined);
 
@@ -137,7 +180,15 @@ export function useLiveFeed() {
       if (heartbeatTimer) clearInterval(heartbeatTimer);
       wsRef.current?.close();
     };
-  }, [upsertSignal]);
+  }, [applyDashboard]);
+
+  // Paint the previous board before the browser shows a blank, disconnected page.
+  useLayoutEffect(() => {
+    const cached = readCachedBoard();
+    if (!cached) return;
+    setDashboard(cached);
+    if (cached.connection_status) setConnection(cached.connection_status);
+  }, []);
 
   // High-frequency server-now tick for countdowns (100ms).
   // Match timers recompute from absolute end timestamps on this tick.
@@ -161,28 +212,34 @@ export function useLiveFeed() {
       }
       fetch(`${API_URL}/api/dashboard`)
         .then((r) => r.json())
-        .then((d: DashboardPayload) => {
-          setDashboard(d);
-          if (d.connection_status) setConnection(d.connection_status);
-        })
+        .then((d: DashboardPayload) => applyDashboard(d))
         .catch(() => undefined);
     }, 3000);
     return () => clearInterval(id);
-  }, []);
+  }, [applyDashboard]);
 
-  // Visibility: recalculate immediately when tab returns
+  // Visibility: save the board when leaving, and pull a fresh one when returning.
   useEffect(() => {
     const onVis = () => {
-      if (document.visibilityState === "visible") {
-        setServerNow(clockRef.current.serverNow());
-        wsRef.current?.send(
-          JSON.stringify({ type: "get_dashboard", client_send_ms: Date.now() })
-        );
+      if (document.visibilityState === "hidden" && dashboard) {
+        rememberBoard(dashboard, true);
+        return;
       }
+      if (document.visibilityState !== "visible") return;
+      setServerNow(clockRef.current.serverNow());
+      const ws = wsRef.current;
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: "get_dashboard", client_send_ms: Date.now() }));
+        return;
+      }
+      fetch(`${API_URL}/api/dashboard`)
+        .then((r) => r.json())
+        .then((d: DashboardPayload) => applyDashboard(d))
+        .catch(() => undefined);
     };
     document.addEventListener("visibilitychange", onVis);
     return () => document.removeEventListener("visibilitychange", onVis);
-  }, []);
+  }, [applyDashboard, dashboard, rememberBoard]);
 
   return {
     dashboard,

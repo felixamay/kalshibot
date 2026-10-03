@@ -1233,11 +1233,10 @@ class SignalEngine:
                     "data_age_ms": market.data_age_ms if market else None,
                     "tennis": ctx.tennis.to_dict() if ctx.tennis else {"available": False, "analysis_note": "MARKET-ONLY ANALYSIS"},
                     "active_signal": active.to_public_dict(now) if active else None,
-                    "market_snapshot": analyzer.snapshot() if analyzer else None,
                     "baseline": ctx.baseline.as_dict() if ctx.baseline else None,
                     "entry": ctx.last_entry.as_dict() if ctx.last_entry else None,
                     "slip": ctx.last_slip.as_dict() if ctx.last_slip else None,
-                    "pattern": ctx.last_pattern.as_dict() if ctx.last_pattern else None,
+                    "pattern": _pattern_card(ctx.last_pattern),
                     "pattern_health": ctx.last_pattern_health.as_dict() if ctx.last_pattern_health else None,
                     "phase_events": ctx.phase_events[-12:],
                     "position": _position_payload(ctx),
@@ -1263,6 +1262,15 @@ class SignalEngine:
             "message": "NO LIVE TENNIS MARKETS" if len(self.snap.matches) == 0 else None,
             "max_data_age_ms": self.settings.max_data_age_ms,
         }
+
+
+def _pattern_card(pattern: Any) -> dict[str, Any] | None:
+    """Board fields only. Stored examples and the raw book stay off this payload."""
+    if pattern is None:
+        return None
+    card = pattern.as_dict()
+    card.pop("prior_examples", None)
+    return card
 
 
 def _position_payload(ctx: MatchContext) -> dict[str, Any] | None:

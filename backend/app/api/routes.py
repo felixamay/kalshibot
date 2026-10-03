@@ -53,12 +53,14 @@ async def health(db: AsyncSession = Depends(get_db)) -> HealthResponse:
         await db.execute(text("SELECT 1"))
     except Exception:
         db_status = "error"
-    dash = engine.dashboard_payload() if engine else {}
+    # Status only. Building every match card here made a refresh wait on the full board.
+    connection = engine.snap.connection_status.value if engine else "DISCONNECTED"
+    live_matches = len(engine.snap.matches) if engine else 0
     return HealthResponse(
         status="ok" if db_status == "ok" else "degraded",
         server_time_ms=time.time() * 1000.0,
-        connection_status=dash.get("connection_status", "DISCONNECTED"),
-        live_matches=dash.get("live_match_count", 0),
+        connection_status=connection,
+        live_matches=live_matches,
         database=db_status,
         kalshi_read_only=True,
         order_placement_enabled=False,
