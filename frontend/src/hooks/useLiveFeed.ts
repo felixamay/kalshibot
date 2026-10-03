@@ -180,7 +180,7 @@ export function useLiveFeed() {
       if (heartbeatTimer) clearInterval(heartbeatTimer);
       wsRef.current?.close();
     };
-  }, [applyDashboard]);
+  }, [applyDashboard, upsertSignal]);
 
   // Paint the previous board before the browser shows a blank, disconnected page.
   useLayoutEffect(() => {
