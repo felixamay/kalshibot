@@ -85,6 +85,13 @@ _PATTERN_STATES = {
     "PATTERN_BROKEN": SignalType.PATTERN_BROKEN,
 }
 _PATTERN_ENTRIES = {"PATTERN_ENTRY_SIGNAL", "STRONG_PATTERN_SIGNAL"}
+_PATTERN_BET_TYPES = {
+    SignalType.PATTERN_ENTRY_SIGNAL,
+    SignalType.STRONG_PATTERN_SIGNAL,
+}
+# A live tennis quote moves a few cents during the countdown. The card stays
+# up for that countdown unless the price runs this far past the entry.
+_PATTERN_CHASE_CENTS = 8.0
 
 BroadcastFn = Callable[[dict[str, Any]], Awaitable[None]]
 
@@ -548,13 +555,29 @@ class SignalEngine:
         view.current_price = ask
         view.entry_zone_low = round(ask - 1.0, 2)
         view.entry_zone_high = round(ask + 1.0, 2)
-        view.maximum_entry_price = round(ask + self.settings.max_entry_slippage_cents, 2)
+        view.maximum_entry_price = round(ask + max(self.settings.max_entry_slippage_cents, _PATTERN_CHASE_CENTS), 2)
         if view.entry_score >= self.settings.pattern_watch_score and (
             ctx.best_seen_ask is None or ask < ctx.best_seen_ask
         ):
             ctx.best_seen_ask = ask
 
         active = self._active_signal_for(ticker)
+        # The next quote often relabels the same move as late, failed, or still
+        # discovering. That used to erase the card in about a second. The
+        # countdown is the window. A real chase still cancels it.
+        if active and active.is_actionable(now) and active.signal_type in _PATTERN_BET_TYPES:
+            if ask > active.maximum_entry_price:
+                message = "DO NOT ENTER. PRICE MOVED BEYOND ENTRY WINDOW."
+                self.pattern_engine.record_expiry(active.pattern_type or "")
+                active.cancel(ExpirationReason.PRICE_MOVED, price=ask, message=message, server_now_ms=now)
+                await self._emit_signal_update(active)
+                ctx.confirmation_count = 0
+                ctx.display_state = SignalType.DO_NOT_ENTER
+                ctx.hold_reason = message
+                return
+            ctx.display_state = active.signal_type
+            ctx.hold_reason = active.bet_instruction or view.explanation
+            return
         if active and active.is_actionable(now):
             book_text = " ".join(view.blockers)
             book_broke = any(

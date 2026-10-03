@@ -114,13 +114,13 @@ export default function HomePage() {
   const betSignals = useMemo(() => {
     const fromFeed = signals.filter((s) => {
       const rem = s.expires_at_ms - serverNow;
-      return s.actionable && s.status === "ACTIVE" && rem >= 5000 && isBetSignal(s);
+      return s.actionable && s.status === "ACTIVE" && rem > 0 && isBetSignal(s);
     });
     const fromMatches = betMatches
       .map((m) => m.active_signal)
       .filter((s): s is LiveSignal => {
         if (!s || !s.actionable || !isBetSignal(s)) return false;
-        return s.expires_at_ms - serverNow >= 5000;
+        return s.expires_at_ms - serverNow > 0;
       });
     const byMarket = new Map<string, LiveSignal>();
     for (const signal of [...fromFeed, ...fromMatches]) {

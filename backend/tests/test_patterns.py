@@ -7,12 +7,14 @@ import time
 import pytest
 
 from app.config import Settings
-from app.core.enums import ConnectionStatus, SignalType
+from app.core.enums import ConnectionStatus, SignalStatus, SignalType
 from app.database import Base
 from app.services.market.orchestrator import occurrence_start_ms
 from app.services.signals.engine import SignalEngine
+from app.services.signals.live_signal import LiveSignal
 from app.services.signals.patterns import (
     BookSnapshot,
+    PatternAssessment,
     PatternEngine,
     combine_exit_decision,
     make_point,
@@ -550,6 +552,72 @@ async def test_engine_emits_pattern_entry_after_repeated_pullbacks():
     assert emitted[0].pattern_name == "Pullback + Recovery"
     assert emitted[0].maximum_entry_price >= emitted[0].market_price
     assert emitted[0].expires_at_ms > emitted[0].created_at_ms
+    assert emitted[0].expires_at_ms - emitted[0].created_at_ms >= 20_000
+    assert emitted[0].maximum_entry_price >= emitted[0].market_price + 8
+
+
+@pytest.mark.asyncio
+async def test_pattern_bet_stays_for_its_countdown_when_the_next_read_relabels_it():
+    s = settings()
+    engine = SignalEngine(s)
+    engine.snap.connection_status = ConnectionStatus.CONNECTED
+    now = time.time() * 1000.0
+    ctx = engine.register_match(
+        match_id="m1",
+        player_a="Player A",
+        player_b="Player B",
+        tournament="Test",
+        market_ticker="KXTEST",
+        market_db_id="mk1",
+        now_ms=now - 5_000,
+    )
+    sig = LiveSignal(
+        signal_id="SIG-HOLD",
+        signal_version=1,
+        match_id="m1",
+        market_id="mk1",
+        market_ticker="KXTEST",
+        signal_type=SignalType.PATTERN_ENTRY_SIGNAL,
+        player="Player A",
+        direction="YES",
+        created_at_ms=now,
+        expires_at_ms=now + 20_000,
+        original_ttl_ms=20_000,
+        market_price=58,
+        target_entry_price=58,
+        maximum_entry_price=66,
+        model_probability=0.55,
+        net_edge=0.02,
+        confidence=70,
+        creation_price=58,
+        pattern_type="PULLBACK_RECOVERY",
+        bet_instruction="Bet YES on Player A now",
+    )
+    engine.snap.signals[sig.signal_id] = sig
+    ctx.active_signal_id = sig.signal_id
+
+    def relabel(*_args, **_kwargs):
+        return PatternAssessment(
+            decision="PATTERN_ALREADY_ADVANCED",
+            pattern_type="FAILED_BREAKOUT",
+            stage="LATE",
+            progress=90,
+            explanation="Pattern progressed beyond ideal entry zone.",
+        )
+
+    engine._assess_pattern = relabel  # type: ignore[method-assign]
+    await engine.on_market_update(
+        "KXTEST",
+        yes_bid=59.5,
+        yes_ask=60.5,
+        depth_yes=1600,
+        depth_no=700,
+        imbalance=0.2,
+        status="OPEN",
+    )
+    assert sig.status == SignalStatus.ACTIVE
+    assert sig.is_actionable()
+    assert ctx.display_state == SignalType.PATTERN_ENTRY_SIGNAL
 
 
 @pytest.mark.asyncio
