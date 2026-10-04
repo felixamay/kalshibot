@@ -115,6 +115,22 @@ async def test_public_kalshi_page_counts_even_if_sign_in_is_declined(tmp_path):
     assert hosted.error is None
 
 
+@pytest.mark.asyncio
+async def test_score_reading_keeps_the_kalshi_browser(tmp_path):
+    hosted = browser(tmp_path)
+    hosted.kalshi_loaded = True
+    hosted.error = None
+    await hosted._handle_event({
+        "type": "agent.session.turn.output_text.done",
+        "text": "5-7 4-5 30-15. An account prompt appeared, so authentication is required. I did not click Buy.",
+    })
+    finished = await hosted._handle_event({"type": "agent.session.turn.completed", "turn": {"subagent_id": None}})
+    assert finished is True
+    assert hosted.kalshi_loaded is True
+    assert hosted.error is None
+    assert "5-7" in (hosted.last_successful_observation or "")
+
+
 def test_status_hides_the_session_id(tmp_path):
     hosted = browser(tmp_path)
     hosted.session_id = "sess_secret"

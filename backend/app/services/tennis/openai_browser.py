@@ -400,6 +400,10 @@ class OpenAIHostedBrowser:
             "sign-in required",
         ))
         saw_page = "kalshi.com" in lowered or "contains tennis" in lowered or "sports page" in lowered
+        if self.kalshi_loaded:
+            # Later score readings stay on the public Kalshi page.
+            self.error = None
+            return
         if saw_page:
             self.kalshi_loaded = True
             self.error = None
