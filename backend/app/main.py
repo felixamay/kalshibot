@@ -40,7 +40,8 @@ async def lifespan(app: FastAPI):
     async def broadcast(msg: dict) -> None:
         await hub.broadcast(msg)
 
-    engine = SignalEngine(settings, broadcast=broadcast)
+    from app.database import AsyncSessionLocal
+    engine = SignalEngine(settings, broadcast=broadcast, session_factory=AsyncSessionLocal)
     orchestrator = MarketOrchestrator(engine, settings)
     await orchestrator.start()
     yield

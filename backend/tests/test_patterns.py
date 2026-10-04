@@ -413,6 +413,7 @@ async def test_a_match_that_has_not_started_is_not_a_bet():
         now_ms=now,
         scheduled_start_ms=now - (7 * 60 * 60 * 1000),
     )
+    engine.snap.matches["KXLIVE"].score_confirmed = True
     payload = engine.dashboard_payload()
     assert payload["actionable_signals"] == []
     assert [m["market_ticker"] for m in payload["matches"]] == ["KXLIVE"]
@@ -803,6 +804,11 @@ async def test_pattern_failure_cancels_before_countdown():
     engine.snap.signals[sig.signal_id] = sig
     ctx.active_signal_id = sig.signal_id
 
+    from app.services.tennis.provider import TennisLiveState
+    ctx.tennis = TennisLiveState("live", "Player A", "Player B", available=True, server="A", game_score="0-0", match_score="0-0")
+    ctx.tracker.available = True
+    ctx.latest_reasoning = {"reliable": True, "pattern_type": "PULLBACK_RECOVERY", "pattern_confidence": 95, "entry_score": 95, "reason": "Repeated service strength"}
+
     def relabel(*_args, **_kwargs):
         return PatternAssessment(
             decision="PATTERN_ALREADY_ADVANCED",
@@ -827,7 +833,7 @@ async def test_pattern_failure_cancels_before_countdown():
 
 
 @pytest.mark.asyncio
-async def test_study_clock_blocks_entry_for_five_minutes():
+async def test_two_game_gate_replaces_legacy_five_minute_clock():
     s = settings()
     s.initial_observation_seconds = 300
     engine = SignalEngine(s)
@@ -856,7 +862,7 @@ async def test_study_clock_blocks_entry_for_five_minutes():
 
     engine.prob_model.estimate = fake_estimate  # type: ignore[method-assign]
     seed_pullback(engine.pattern_engine, "KXTEST", now, 56, 53, 60, vol=1)
-    for price in (60, 59, 58, 57, 57.4, 58):
+    for price in (60, 59, 58, 57, 57.4, 58, 58, 58):
         await engine.on_market_update(
             "KXTEST",
             yes_bid=price - 0.5,
@@ -868,6 +874,8 @@ async def test_study_clock_blocks_entry_for_five_minutes():
         )
     payload = engine.dashboard_payload()
     card = payload["matches"][0]
-    assert card["observation_remaining_ms"] == pytest.approx(300_000, abs=100)
-    assert card["display_state"] == "STUDYING_MATCH"
-    assert not payload["actionable_signals"]
+    assert card["observation_remaining_ms"] == 0
+    emitted = [sig for sig in engine.snap.signals.values() if sig.signal_type == SignalType.PATTERN_ENTRY_SIGNAL]
+    assert emitted, card["hold_reason"]
+    assert emitted[0].is_actionable()
+    assert card["display_state"] == "PATTERN_ENTRY_SIGNAL"
