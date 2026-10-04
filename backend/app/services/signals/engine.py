@@ -699,6 +699,7 @@ class SignalEngine:
         if not ctx.tracker.available:
             ctx.display_state = SignalType.SEARCHING_FOR_ENTRY
             ctx.hold_reason = "SERVICE-GAME DATA UNAVAILABLE — WAIT"
+            self._attach_hybrid(ctx, market)
             return
         if ctx.tracker.available:
             reasoning = ctx.latest_reasoning
@@ -710,6 +711,19 @@ class SignalEngine:
             ctx.hold_reason = ctx.latest_reasoning["reason"] if ctx.latest_reasoning else "WAIT"
             return
         await self._evaluate_entry(ctx, market, now)
+
+    def _attach_hybrid(self, ctx: MatchContext, market: MarketState, view=None) -> None:
+        """Publish the combined YES/WATCH/WAIT/NO/DO NOT CHASE read on every quote."""
+        if view is None:
+            view = ctx.last_pattern
+        if view is None:
+            from app.services.signals.patterns import PatternAssessment
+            view = PatternAssessment(decision="SEARCHING", entry_score=0)
+        yes_side = "PLAYER_A" if market_yes_player(ctx, market) == ctx.player_a else "PLAYER_B"
+        ctx.hybrid_decision = self.hybrid_engine.decide(
+            view, ctx.ai_analysis, market, yes_side,
+            match_id=ctx.match_id, player_a=ctx.player_a, player_b=ctx.player_b,
+        )
 
     def _show_pattern_study(self, ctx: MatchContext, market: MarketState, now: float) -> None:
         """Expose developing evidence without authorizing a betting entry."""
@@ -725,6 +739,7 @@ class SignalEngine:
             if view.decision in _PATTERN_ENTRIES:
                 ctx.display_state = SignalType.PATTERN_DEVELOPING
             ctx.hold_reason = f"{view.pattern_name}: {view.explanation} Game-win check: {reasoning['reason']}"
+        self._attach_hybrid(ctx, market, view)
 
     def _score_market(self, ctx: MatchContext, market: MarketState) -> ProbabilityResult:
         player = market_yes_player(ctx, market)
@@ -926,11 +941,7 @@ class SignalEngine:
         ):
             ctx.best_seen_ask = ask
 
-        ctx.hybrid_decision = self.hybrid_engine.decide(
-            view, ctx.ai_analysis, market,
-            'PLAYER_A' if market_yes_player(ctx, market) == ctx.player_a else 'PLAYER_B',
-            match_id=ctx.match_id, player_a=ctx.player_a, player_b=ctx.player_b,
-        )
+        self._attach_hybrid(ctx, market, view)
         active = self._active_signal_for(ticker)
         if active and active.is_actionable(now):
             book_text = " ".join(view.blockers)
