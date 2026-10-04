@@ -74,7 +74,7 @@ def extract_market_prices(m: dict[str, Any]) -> dict[str, Optional[float | str]]
     }
 
 
-from app.services.kalshi.tennis_detector import TennisMarketDetector
+from app.services.kalshi.tennis_detector import TennisMarketDetector, live_board_status
 
 
 def _kalshi_match_is_trading(market, now):
@@ -464,6 +464,51 @@ class MarketOrchestrator:
             except asyncio.TimeoutError:
                 pass
 
+    async def _widget_details(self, milestones: dict) -> dict[str, dict]:
+        """Live widget for matches that could be on court. Milestone text alone lags both ways."""
+        now = time.time()
+        cached = getattr(self, "_widgets", None)
+        if cached is not None and now - getattr(self, "_widget_at", 0) < 20:
+            return cached
+        open_events = {meta.get("event_ticker") for meta in self._market_meta.values()}
+        ids = []
+        seen = set()
+        for event, row in milestones.items():
+            if event not in open_events:
+                continue
+            milestone_id = row.get("id")
+            start = row.get("start")
+            if not milestone_id or milestone_id in seen or not start:
+                continue
+            try:
+                start_s = datetime.fromisoformat(str(start).replace("Z", "+00:00")).timestamp()
+            except ValueError:
+                continue
+            if now - 10 * 3600 <= start_s <= now + 20 * 60:
+                seen.add(milestone_id)
+                ids.append(milestone_id)
+        if not ids:
+            self._widgets = {}
+            self._widget_at = now
+            return {}
+
+        async def one(milestone_id: str):
+            try:
+                return milestone_id, await self.client.milestone_live_details(milestone_id)
+            except Exception as exc:
+                logger.warning("Live widget %s: %s", milestone_id[:8], type(exc).__name__)
+                return milestone_id, {}
+
+        # A handful at a time. These are public reads, not orders.
+        found = {}
+        for offset in range(0, len(ids), 8):
+            batch = await asyncio.gather(*(one(milestone_id) for milestone_id in ids[offset:offset + 8]))
+            found.update(dict(batch))
+        self._widgets = found
+        self._widget_at = now
+        logger.info("LIVE WIDGETS CHECKED: %s", len(found))
+        return found
+
     async def _attach_milestones(self) -> None:
         """Stamp each market with Kalshi's match milestone. A past occurrence_datetime is not live play."""
         now = time.time()
@@ -478,13 +523,14 @@ class MarketOrchestrator:
                 cached = cached or {}
             self._milestones = cached
             self._milestone_at = now
+        widgets = await self._widget_details(cached)
         for meta in self._market_meta.values():
             row = cached.get(meta.get("event_ticker") or "")
             if not row:
                 meta.pop("_milestone_status", None)
                 meta.pop("_milestone_start", None)
                 continue
-            meta["_milestone_status"] = row.get("status")
+            meta["_milestone_status"] = live_board_status(row.get("status") or "", widgets.get(row.get("id") or ""))
             meta["_milestone_start"] = row.get("start")
 
     async def _link_scoreboard(self) -> None:

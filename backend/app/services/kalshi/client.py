@@ -300,12 +300,17 @@ class KalshiReadOnlyClient:
                     if current is None or _milestone_rank(status) > _milestone_rank(current["status"]) or (
                         _milestone_rank(status) == _milestone_rank(current["status"]) and start > current["start"]
                     ):
-                        index[ticker] = {"status": status, "start": start}
+                        index[ticker] = {"status": status, "start": start, "id": str(row.get("id") or "")}
             cursor = data.get("cursor")
             if not cursor:
                 break
             await asyncio.sleep(0.1)
         return index
+
+    async def milestone_live_details(self, milestone_id: str) -> dict[str, Any]:
+        data = await self.request("GET", f"/live_data/milestone/{milestone_id}", authenticated=False)
+        details = (data.get("live_data") or {}).get("details") or {}
+        return details if isinstance(details, dict) else {}
 
 
 def _milestone_rank(status: str) -> int:

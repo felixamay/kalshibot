@@ -108,9 +108,11 @@ class TennisMarketDetector:
             if start is not None and start > now_ms:
                 return 'STARTING' if start - now_ms <= 300000 else 'UPCOMING'
             return 'UPCOMING'
-        if milestone in {'p', 'closed', 'cancelled', 'wov', 'ctc', 'pc', 'ended', 'finished', 'complete', 'completed'}:
+        if milestone in {'closed', 'cancelled', 'wov', 'ctc', 'pc', 'ended', 'finished', 'complete', 'completed'}:
             return 'ENDED'
-        if milestone in {'live', 'inprogress', 'in_progress'} or score_live or market.get('is_live') is True or status == 'live':
+        # P is the feed code for a match that has started. A finished match is
+        # rewritten to ended from the live widget before this runs.
+        if milestone in {'live', 'inprogress', 'in_progress', 'p'} or score_live or market.get('is_live') is True or status == 'live':
             return 'LIVE'
         if start is not None and start > now_ms:
             return 'STARTING' if start - now_ms <= 300000 else 'UPCOMING'
@@ -131,3 +133,37 @@ class TennisMarketDetector:
         # Event identity prevents rematches on different dates being merged.
         signature = tuple(sorted('/'.join(part.strip().split()[-1].casefold() for part in name.split('/')) for name in (a, b)))
         return (market.get('event_ticker') or market.get('ticker'), signature) if b != 'Opponent unavailable' else (market.get('event_ticker') or market.get('ticker'), 'unresolved')
+
+
+def widget_finished(details) -> bool:
+    if not isinstance(details, dict) or not details:
+        return False
+    widget = str(details.get("widget_status") or "").lower()
+    status = str(details.get("status") or "").lower()
+    match = str(details.get("match_status") or "").lower()
+    return widget == "finished" or status in {"closed", "ended", "complete", "finished"} or match in {
+        "ended", "closed", "complete", "completed", "retired", "walkover",
+    }
+
+
+def widget_is_live(details):
+    """True when Kalshi's live widget shows the match in progress."""
+    if not isinstance(details, dict) or not details:
+        return None
+    if widget_finished(details):
+        return False
+    widget = str(details.get("widget_status") or "").lower()
+    status = str(details.get("status") or "").lower()
+    match = str(details.get("match_status") or "").lower()
+    if widget == "live" or status in {"started", "live"} or match.endswith("set"):
+        return True
+    return False
+
+
+def live_board_status(milestone_status: str, details) -> str:
+    """Milestone text lags. The live widget is the in-progress check."""
+    if widget_is_live(details) is True:
+        return "live"
+    if widget_finished(details):
+        return "ended"
+    return str(milestone_status or "").lower()

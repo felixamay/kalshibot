@@ -192,6 +192,17 @@ def test_match_markets_cover_tours_and_skip_derivatives():
     assert detector.is_match_winner({'ticker': 'KXITFMATCH-X', 'title': 'Player wins'})
 
 
+def test_live_widget_overrides_a_stale_not_started_milestone():
+    from app.services.kalshi.tennis_detector import live_board_status
+    playing = {"widget_status": "live", "status": "live", "match_status": "1st_set"}
+    assert live_board_status("not_started", playing) == "live"
+    assert TennisMarketDetector().state(market(_milestone_status="live"), time.time()*1000) == "LIVE"
+    finished = {"widget_status": "finished", "status": "closed", "match_status": "ended"}
+    assert live_board_status("live", finished) == "ended"
+    assert TennisMarketDetector().state(market(_milestone_status="ended"), time.time()*1000) == "ENDED"
+    assert live_board_status("not_started", None) == "not_started"
+
+
 def test_explicit_kalshi_live_evidence_and_future_start_states():
     detector = TennisMarketDetector()
     assert detector.state(market(is_live=True), time.time()*1000) == 'LIVE'
