@@ -11,6 +11,12 @@ from app.services.tennis.livetennis import (
     state_for_players,
 )
 
+
+@pytest.fixture(autouse=True)
+def _isolate_live_tennis_slate(tmp_path, monkeypatch):
+    """Tests must not overwrite the process slate used by the running API."""
+    monkeypatch.setattr("app.services.tennis.livetennis._SLATE_FILE", tmp_path / "slate.json")
+
 _SLATE = {
     "data": [
         {
@@ -223,19 +229,71 @@ async def test_live_tennis_sends_the_key_as_bearer_and_x_api_key():
 
 def test_a_kalshi_match_that_just_traded_is_treated_as_live():
     now = 1_000_000.0
+    started = "1970-01-12T13:40:00+00:00"
     assert _kalshi_match_is_trading(
         {
             "last_price_dollars": "0.29",
+            "occurrence_datetime": started,
+            "updated_time": "1970-01-12T13:46:10+00:00",
+            "status": "active",
+        },
+        now,
+    )
+    assert not _kalshi_match_is_trading(
+        {
+            "last_price_dollars": "0.29",
+            "occurrence_datetime": "1970-01-12T14:00:00+00:00",
             "updated_time": "1970-01-12T13:46:10+00:00",
         },
         now,
     )
     assert not _kalshi_match_is_trading(
-        {"last_price_dollars": "0.29", "updated_time": "1970-01-01T00:00:00+00:00"},
+        {
+            "last_price_dollars": "0",
+            "occurrence_datetime": started,
+            "updated_time": "1970-01-12T13:46:10+00:00",
+        },
         now,
     )
-    # Two hours is still the same match. A day-old quote is not.
     assert not _kalshi_match_is_trading(
-        {"last_price_dollars": "0", "updated_time": "1970-01-12T13:46:10+00:00"},
+        {
+            "last_price_dollars": "0.99",
+            "occurrence_datetime": started,
+            "updated_time": "1970-01-12T13:46:10+00:00",
+            "status": "finalized",
+        },
         now,
     )
+
+
+@pytest.mark.asyncio
+async def test_a_fresh_saved_slate_is_used_before_spending_a_call(tmp_path, monkeypatch):
+    slate = tmp_path / "slate.json"
+    monkeypatch.setattr("app.services.tennis.livetennis._SLATE_FILE", slate)
+    slate.write_text(
+        '{"saved_at": %s, "matches": [{"match_id": "88", "player_a": "Ann Ace", "player_b": "Bea Ball", "tournament": "Live Cup", "sets": [[3, 2]], "point_score": "15-0", "match_score": "0-0", "server": "A"}]}'
+        % __import__("time").time()
+    )
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(200, json=_SLATE)
+
+    settings = Settings(
+        tennis_provider="livetennis",
+        tennis_api_key="test-key",
+        tennis_api_base_url="https://api.livetennisapi.com/api/public/v1",
+        tennis_poll_interval_seconds=900,
+    )
+    provider = LiveTennisProvider(settings)
+    await provider._client.aclose()
+    provider._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        live = await provider.list_live_matches()
+    finally:
+        await provider.close()
+    assert calls["n"] == 0
+    assert live is not None and len(live) == 1
+    assert live[0].player_a == "Ann Ace"
+    assert live[0].point_score == "15-0"

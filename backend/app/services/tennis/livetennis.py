@@ -215,6 +215,11 @@ class LiveTennisProvider(TennisDataProvider):
             return self._live
         if now < self._blocked_until:
             return self._live if self._ok else None
+        # A restart must not spend a daily call when the last live slate is still fresh.
+        if not self._ok:
+            self._restore_saved_slate()
+            if self._ok and (now - self._fetched_at) < interval:
+                return self._live
         if not self.settings.tennis_api_key:
             logger.warning("Live Tennis API key is not set")
             return self._live if self._ok else None

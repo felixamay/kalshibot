@@ -75,20 +75,26 @@ def extract_market_prices(m: dict[str, Any]) -> dict[str, Optional[float | str]]
 
 
 def _kalshi_match_is_trading(market: dict[str, Any], now: float) -> bool:
-    """A last trade in the last half hour is the match that is still live on Kalshi."""
+    """A priced match whose scheduled start has passed is still live on Kalshi."""
+    status = str(market.get("status") or "").upper()
+    if status in {"FINALIZED", "SETTLED", "CLOSED", "DETERMINED"}:
+        return False
     last = _to_float(market.get("last_price_dollars") or market.get("last_price"))
     if last is None or last <= 0:
         return False
+    start_ms = occurrence_start_ms(market)
+    if start_ms is None or start_ms > now * 1000.0:
+        return False
     raw = market.get("updated_time")
     if not isinstance(raw, str) or not raw.strip():
-        return False
+        return True
     try:
         dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
     except ValueError:
-        return False
+        return True
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
-    return (now - dt.timestamp()) <= 2 * 60 * 60
+    return (now - dt.timestamp()) <= 6 * 60 * 60
 
 
 def occurrence_start_ms(market: dict[str, Any]) -> Optional[float]:
