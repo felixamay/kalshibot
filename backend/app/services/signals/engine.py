@@ -87,6 +87,23 @@ _PATTERN_STATES = {
     "PATTERN_BROKEN": SignalType.PATTERN_BROKEN,
 }
 _PATTERN_ENTRIES = {"PATTERN_ENTRY_SIGNAL", "STRONG_PATTERN_SIGNAL"}
+
+
+def _qualified_success_bet(view: Any) -> bool:
+    """A repeated or >=70% pattern is a bet unless the market has invalidated it."""
+    if view is None or getattr(view, "decision", None) not in _PATTERN_ENTRIES:
+        return False
+    rate = getattr(view, "success_rate", None)
+    successes = getattr(view, "successes", 0) or 0
+    if successes < 3 and not (rate is not None and rate >= 0.70):
+        return False
+    if getattr(view, "stage", "") in ("LATE", "COMPLETED") or getattr(view, "orderbook_only", False):
+        return False
+    blocked = " ".join(getattr(view, "blockers", []) or []).lower()
+    return not any(
+        token in blocked
+        for token in ("stale", "liquidity", "spread", "extreme", "contradict", "advanced", "broken", "chase")
+    )
 _PATTERN_BET_TYPES = {
     SignalType.PATTERN_ENTRY_SIGNAL,
     SignalType.STRONG_PATTERN_SIGNAL,
@@ -710,8 +727,10 @@ class SignalEngine:
         if ctx.tracker.available:
             reasoning = ctx.latest_reasoning
             if not reasoning or not reasoning["reliable"]:
-                self._show_pattern_study(ctx, market, now)
-                return
+                preview = self._assess_pattern(ctx, market, now)
+                if not _qualified_success_bet(preview):
+                    self._show_pattern_study(ctx, market, now)
+                    return
         if block_completed:
             ctx.display_state = SignalType.ENTRY_DEVELOPING if ctx.latest_reasoning and ctx.latest_reasoning["reliable"] else SignalType.SEARCHING_FOR_ENTRY
             ctx.hold_reason = ctx.latest_reasoning["reason"] if ctx.latest_reasoning else "WAIT"
@@ -742,7 +761,7 @@ class SignalEngine:
         ctx.last_pattern = view
         if view.pattern_type:
             ctx.display_state = _PATTERN_STATES.get(view.decision, SignalType.PATTERN_DEVELOPING)
-            if view.decision in _PATTERN_ENTRIES:
+            if view.decision in _PATTERN_ENTRIES and not _qualified_success_bet(view):
                 ctx.display_state = SignalType.PATTERN_DEVELOPING
             ctx.hold_reason = f"{view.pattern_name}: {view.explanation} Game-win check: {reasoning['reason']}"
         self._attach_hybrid(ctx, market, view)
@@ -909,7 +928,7 @@ class SignalEngine:
             ctx.confirmation_count = 0
             view.confirming = False
             view.decision = "SEARCHING"
-        if ctx.latest_reasoning:
+        if ctx.latest_reasoning and not _qualified_success_bet(view):
             view.entry_score = min(view.entry_score, ctx.latest_reasoning["entry_score"])
             view.confidence = min(view.confidence, ctx.latest_reasoning["pattern_confidence"])
             if not ctx.latest_reasoning["reliable"] or view.entry_score < self.settings.pattern_entry_score:
@@ -922,7 +941,7 @@ class SignalEngine:
             view = self._assess_pattern(ctx, market, now)
         else:
             ctx.confirmation_count = 0
-        if ctx.latest_reasoning:
+        if ctx.latest_reasoning and not _qualified_success_bet(view):
             view.entry_score = min(view.entry_score, ctx.latest_reasoning["entry_score"])
             view.confidence = min(view.confidence, ctx.latest_reasoning["pattern_confidence"])
             if view.decision == "STRONG_PATTERN_SIGNAL" and (view.entry_score < self.settings.strong_pattern_entry_score or view.confidence < self.settings.strong_pattern_confidence):
