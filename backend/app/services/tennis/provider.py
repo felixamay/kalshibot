@@ -188,22 +188,6 @@ class HttpTennisProvider(TennisDataProvider):
 
 
 def create_tennis_provider(settings: Settings | None = None) -> TennisDataProvider:
-    """Live scores come from the Kalshi page. This factory never calls ESPN."""
-    settings = settings or get_settings()
-    name = (settings.tennis_provider or "none").strip().lower()
-    if name == "espn":
-        logger.warning("ESPN scores are disabled; the Kalshi page is the score source")
-        return NullTennisProvider()
-    if name in ("none", "", "null"):
-        return NullTennisProvider()
-    if name in ("livetennis", "live_tennis", "livetennisapi"):
-        if not settings.tennis_api_key:
-            logger.warning("Live Tennis API key missing; ESPN is not called")
-            return NullTennisProvider()
-        from app.services.tennis.livetennis import LiveTennisProvider
-
-        return LiveTennisProvider(settings)
-    if not settings.tennis_api_key:
-        logger.warning("Tennis API key missing; ESPN is not called")
-        return NullTennisProvider()
-    return HttpTennisProvider(settings)
+    """Scores come from the ChatGPT browser view of Kalshi. No other score API is called."""
+    del settings
+    return NullTennisProvider()

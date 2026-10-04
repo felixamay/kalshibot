@@ -8,6 +8,7 @@ import pytest
 from app.config import Settings
 from app.services.tennis.openai_browser import (
     VERIFICATION_TASK,
+    BrowserBusy,
     OpenAIHostedBrowser,
     action_is_trade,
     approval_event,
@@ -114,6 +115,22 @@ async def test_public_kalshi_page_counts_even_if_sign_in_is_declined(tmp_path):
     assert hosted.error is None
 
 
+@pytest.mark.asyncio
+async def test_score_reading_keeps_the_kalshi_browser(tmp_path):
+    hosted = browser(tmp_path)
+    hosted.kalshi_loaded = True
+    hosted.error = None
+    await hosted._handle_event({
+        "type": "agent.session.turn.output_text.done",
+        "text": "5-7 4-5 30-15. An account prompt appeared, so authentication is required. I did not click Buy.",
+    })
+    finished = await hosted._handle_event({"type": "agent.session.turn.completed", "turn": {"subagent_id": None}})
+    assert finished is True
+    assert hosted.kalshi_loaded is True
+    assert hosted.error is None
+    assert "5-7" in (hosted.last_successful_observation or "")
+
+
 def test_status_hides_the_session_id(tmp_path):
     hosted = browser(tmp_path)
     hosted.session_id = "sess_secret"
@@ -162,6 +179,48 @@ async def test_creates_session_approves_kalshi_and_reuses_it(tmp_path, caplog):
     creates = [call for call in transport.calls if call[0] == "POST" and call[1] == "/v1/agents/sessions"]
     assert len(creates) == 1
     assert hosted.trade_controls_activated is False
+
+
+@pytest.mark.asyncio
+async def test_observe_reuses_the_open_kalshi_browser(tmp_path):
+    transport = FakeTransport()
+    transport.events = [
+        {"type": "agent.session.turn.output_text.done", "text": "5-7 4-5 30-15\nServer: Nico Hipfl"},
+        {"type": "agent.session.turn.completed", "turn": {"subagent_id": None}},
+    ]
+    hosted = browser(tmp_path, transport)
+    hosted.session_id = "sess_test"
+    hosted.state = "CONNECTED"
+    hosted.environment_alive = True
+    hosted.kalshi_loaded = True
+    text = await hosted.observe("Open https://kalshi.com/markets/kxatpmatch/e and read the score. Do not click Buy.")
+    assert text is not None and "5-7" in text
+    creates = [call for call in transport.calls if call[0] == "POST" and call[1] == "/v1/agents/sessions"]
+    assert creates == []
+    messages = [
+        call for call in transport.calls
+        if call[2] and call[2].get("events", [{}])[0].get("type") == "agent.session.input.message"
+    ]
+    assert messages
+    assert "Buy" in messages[0][2]["events"][0]["input"][0]["content"][0]["text"]
+
+
+@pytest.mark.asyncio
+async def test_busy_browser_pauses_the_next_score_read(tmp_path):
+    hosted = browser(tmp_path)
+
+    async def request(method, path, json_body=None):
+        return 503, {"error": {"message": "The browser is busy"}}
+
+    hosted.transport.request = request
+    hosted.session_id = "sess_test"
+    try:
+        await hosted._post_events([user_message("Read the Kalshi score. Do not click Buy.")])
+    except BrowserBusy as exc:
+        assert "busy" in str(exc)
+    else:
+        raise AssertionError("expected the browser to report that it is busy")
+    assert hosted._busy_until > __import__("time").time()
 
 
 @pytest.mark.asyncio

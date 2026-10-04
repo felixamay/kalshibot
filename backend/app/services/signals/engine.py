@@ -243,6 +243,8 @@ class SignalEngine:
         self.snap = EngineSnapshot()
         self._lock = asyncio.Lock()
         self._seq = 0
+        self._persisted_pattern_ids: set[str] = set()
+        self._patterns_restored = False
 
     def set_connection_status(self, status: ConnectionStatus) -> None:
         self.snap.connection_status = status
@@ -514,6 +516,7 @@ class SignalEngine:
         from app.services.tennis.service_games import ServeBlock, ServiceGame
         from sqlalchemy import select
         import json
+        await self.restore_pattern_library()
         try:
             async with (self.session_factory or AsyncSessionLocal)() as session:
                 blocks = (await session.execute(select(ServeBlockRecord).where(ServeBlockRecord.match_id == ctx.match_id))).scalars()
@@ -545,6 +548,130 @@ class SignalEngine:
                 ctx.latest_reasoning = dict(ctx.reasoning_history[-1], reliable=False, decision="WAIT", reason="Restart: awaiting fresh service-game evidence")
         except Exception:
             logger.exception("Could not restore match reasoning history")
+
+    async def restore_pattern_library(self) -> None:
+        """Observed success lives with the match. A restart must not wipe it."""
+        if self._patterns_restored or self.session_factory is None:
+            self._patterns_restored = True
+            return
+        self._patterns_restored = True
+        from app.models import PatternFeature, PatternInstanceRecord
+        from app.services.signals.patterns import PatternInstance
+        from sqlalchemy import select
+        import json
+        try:
+            async with self.session_factory() as session:
+                rows = list((await session.execute(select(PatternInstanceRecord))).scalars())
+                features = {
+                    row.pattern_id: json.loads(row.feature_json or "{}")
+                    for row in (await session.execute(select(PatternFeature))).scalars()
+                }
+        except Exception:
+            logger.exception("Could not restore the pattern library")
+            return
+        for row in rows:
+            extra = features.get(row.id) or {}
+            instance = PatternInstance(
+                pattern_id=row.id,
+                pattern_type=row.pattern_type,
+                player_side=row.player_side or "YES",
+                start_timestamp=row.start_timestamp,
+                end_timestamp=row.end_timestamp,
+                start_price=row.start_price,
+                lowest_price=row.lowest_price,
+                highest_price=row.highest_price,
+                recovery_price=row.recovery_price,
+                duration=row.duration,
+                price_change=row.price_change,
+                volatility=row.volatility,
+                spread=row.spread,
+                liquidity=row.liquidity,
+                orderbook_before=json.loads(row.orderbook_before or "{}"),
+                orderbook_during=json.loads(row.orderbook_during or "{}"),
+                orderbook_after=json.loads(row.orderbook_after or "{}"),
+                trade_flow=row.trade_flow or 0,
+                result=row.result or "open",
+                success_or_failure=row.success_or_failure or "open",
+                normalized_pullback=float(extra.get("normalized_pullback") or 0),
+                normalized_recovery=float(extra.get("normalized_recovery") or 0),
+                tournament=extra.get("tournament"),
+                cluster_id=extra.get("cluster_id"),
+                cluster_name=extra.get("cluster_name") or "",
+                ticker=row.market_ticker,
+            )
+            self.pattern_engine.match_memory[instance.ticker].append(instance)
+            self.pattern_engine.historical.append(instance)
+            self.pattern_engine._note_performance(instance)
+            self._persisted_pattern_ids.add(instance.pattern_id)
+        for ticker in list(self.pattern_engine.match_memory):
+            self.pattern_engine._trim_memory(ticker)
+
+    async def _persist_pattern_memory(self) -> None:
+        fresh = [
+            item
+            for rows in self.pattern_engine.match_memory.values()
+            for item in rows
+            if item.pattern_id not in self._persisted_pattern_ids
+        ]
+        if not fresh or self.session_factory is None:
+            return
+        from app.models import PatternFeature, PatternInstanceRecord
+        from sqlalchemy import select
+        import json
+        try:
+            async with self.session_factory() as session:
+                for item in fresh:
+                    await session.merge(PatternInstanceRecord(
+                        id=item.pattern_id,
+                        match_id=None,
+                        market_ticker=item.ticker,
+                        pattern_type=item.pattern_type,
+                        player_side=item.player_side,
+                        start_timestamp=item.start_timestamp,
+                        end_timestamp=item.end_timestamp,
+                        start_price=item.start_price,
+                        lowest_price=item.lowest_price,
+                        highest_price=item.highest_price,
+                        recovery_price=item.recovery_price,
+                        duration=item.duration,
+                        price_change=item.price_change,
+                        volatility=item.volatility,
+                        spread=item.spread,
+                        liquidity=item.liquidity,
+                        orderbook_before=json.dumps(item.orderbook_before),
+                        orderbook_during=json.dumps(item.orderbook_during),
+                        orderbook_after=json.dumps(item.orderbook_after),
+                        trade_flow=item.trade_flow,
+                        result=item.result,
+                        success_or_failure=item.success_or_failure,
+                    ))
+                    feature = (await session.execute(select(PatternFeature).where(PatternFeature.pattern_id == item.pattern_id))).scalar_one_or_none()
+                    payload = json.dumps({
+                        "normalized_pullback": item.normalized_pullback,
+                        "normalized_recovery": item.normalized_recovery,
+                        "tournament": item.tournament,
+                        "cluster_id": item.cluster_id,
+                        "cluster_name": item.cluster_name,
+                    })
+                    if feature is None:
+                        session.add(PatternFeature(
+                            pattern_id=item.pattern_id,
+                            normalized_pullback=item.normalized_pullback,
+                            normalized_recovery=item.normalized_recovery,
+                            volatility=item.volatility,
+                            spread=item.spread,
+                            liquidity=item.liquidity,
+                            trade_flow=item.trade_flow,
+                            feature_json=payload,
+                        ))
+                    else:
+                        feature.feature_json = payload
+                        feature.normalized_pullback = item.normalized_pullback
+                        feature.normalized_recovery = item.normalized_recovery
+                await session.commit()
+            self._persisted_pattern_ids.update(item.pattern_id for item in fresh)
+        except Exception:
+            logger.exception("Could not persist pattern memory")
 
     async def _persist_block(self, ctx, block, reasoning):
         from app.database import AsyncSessionLocal
@@ -720,10 +847,14 @@ class SignalEngine:
             return
 
         if not ctx.tracker.available:
-            ctx.display_state = SignalType.SEARCHING_FOR_ENTRY
-            ctx.hold_reason = "SERVICE-GAME DATA UNAVAILABLE — WAIT"
-            self._attach_hybrid(ctx, market)
-            return
+            preview = self._assess_pattern(ctx, market, now)
+            ctx.last_pattern = preview
+            await self._persist_pattern_memory()
+            if not _qualified_success_bet(preview):
+                ctx.display_state = SignalType.SEARCHING_FOR_ENTRY
+                ctx.hold_reason = "SERVICE-GAME DATA UNAVAILABLE — WAIT"
+                self._attach_hybrid(ctx, market, preview)
+                return
         if ctx.tracker.available:
             reasoning = ctx.latest_reasoning
             if not reasoning or not reasoning["reliable"]:
@@ -923,7 +1054,11 @@ class SignalEngine:
             return
         previous_reasoning_state = (ctx.latest_reasoning.get("decision"), ctx.latest_reasoning.get("confirmation_count")) if ctx.latest_reasoning else None
         view = self._assess_pattern(ctx, market, now)
-        if ctx.latest_reasoning and view.pattern_type != ctx.latest_reasoning.get("pattern_type"):
+        if (
+            ctx.latest_reasoning
+            and ctx.latest_reasoning.get("reliable")
+            and view.pattern_type != ctx.latest_reasoning.get("pattern_type")
+        ):
             ctx.latest_reasoning.update(reliable=False, decision="WAIT", reason="PATTERN CHANGED — WAIT FOR NEXT SERVICE BLOCK")
             ctx.confirmation_count = 0
             view.confirming = False
@@ -953,7 +1088,11 @@ class SignalEngine:
                 ctx.latest_reasoning["questions"]["tradeable_window_now"] = view.decision in _PATTERN_ENTRIES
         ask = market.executable_yes_price() if view.player_side != "NO" else market.executable_no_price()
         view.current_price = ask
-        if ctx.latest_reasoning and ctx.latest_reasoning.get("maximum_entry_price") is not None:
+        if (
+            ctx.latest_reasoning
+            and ctx.latest_reasoning.get("reliable")
+            and ctx.latest_reasoning.get("maximum_entry_price") is not None
+        ):
             view.maximum_entry_price = ctx.latest_reasoning["maximum_entry_price"]
             view.entry_zone_low = ctx.latest_reasoning["entry_zone_low"]
             view.entry_zone_high = ctx.latest_reasoning["entry_zone_high"]
@@ -1001,6 +1140,7 @@ class SignalEngine:
             else:
                 ctx.display_state = active.signal_type
                 ctx.hold_reason = view.explanation
+                await self._persist_pattern_memory()
                 return
 
         if ctx.latest_reasoning:
@@ -1009,6 +1149,7 @@ class SignalEngine:
             block = next((b for b in ctx.tracker.blocks if b.block_id == ctx.latest_reasoning["block_id"]), None)
             if block:
                 await self._persist_block(ctx, block, ctx.latest_reasoning)
+        await self._persist_pattern_memory()
         state = _PATTERN_STATES.get(view.decision, SignalType.SEARCHING_FOR_ENTRY)
         ctx.display_state = state
         ctx.hold_reason = view.explanation
@@ -1442,7 +1583,12 @@ class SignalEngine:
             reason = ExpirationReason.LIQUIDITY_LOSS
         elif market.imbalance * direction_sign < -0.55:
             reason = ExpirationReason.ORDERBOOK_REVERSAL
-        elif ctx.latest_reasoning and not ctx.latest_reasoning["reliable"] and sig.signal_type in _PATTERN_BET_TYPES:
+        elif (
+            ctx.latest_reasoning
+            and not ctx.latest_reasoning["reliable"]
+            and sig.signal_type in _PATTERN_BET_TYPES
+            and not _qualified_success_bet(self._assess_pattern(ctx, market, now))
+        ):
             reason = ExpirationReason.PATTERN_INVALIDATED
         if reason:
             sig.cancel(reason, price=current, server_now_ms=now)

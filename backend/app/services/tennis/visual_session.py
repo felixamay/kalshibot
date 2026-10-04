@@ -332,25 +332,20 @@ class KalshiVisualSession:
     async def start(self) -> None:
         if not getattr(self.settings, "openai_api_key", ""):
             self.gpt_connected = False
-            self.reason = "OPENAI_API_KEY is not configured"
-        hosted = asyncio.create_task(self.hosted.start())
-        try:
-            await self._launch_browser()
-            await self._navigate("https://kalshi.com/")
-            self.browser_open = True
-            if not self.viewing:
-                self.viewing = "kalshi.com"
-        except Exception as exc:
             self.browser_open = False
-            logger.warning("Kalshi visual browser: %s", type(exc).__name__)
+            self.reason = "OPENAI_API_KEY is not configured"
+            return
         try:
-            await hosted
+            await self.hosted.start()
         except Exception as exc:
             logger.warning("OpenAI browser: %s", type(exc).__name__)
         status = self.hosted.public_status()
         self.gpt_connected = status["connected"]
+        self.browser_open = status["connected"]
         if not status["connected"]:
             self.reason = status.get("error") or self.reason
+        elif not self.viewing:
+            self.viewing = "kalshi.com"
 
     async def stop(self) -> None:
         self._stop.set()
@@ -376,12 +371,15 @@ class KalshiVisualSession:
     async def watch(self, matches) -> None:
         if not matches:
             return
-        if self._proc is None or self._proc.returncode is not None:
+        status = self.hosted.public_status()
+        self.gpt_connected = status["connected"]
+        self.browser_open = status["connected"]
+        if not self.browser_open:
             await self.start()
-        for _ in range(min(6, len(matches))):
-            moved = await self._watch_one(matches)
-            if not moved:
-                return
+        if not self.browser_open:
+            self.no_signal_reason = self.reason or "GPT browser is not connected"
+            return
+        await self._watch_one(matches)
 
     async def _watch_one(self, matches) -> bool:
         ctx = matches[self._cursor % len(matches)]
@@ -393,16 +391,26 @@ class KalshiVisualSession:
             if self.browser_open:
                 self.last_result = "WAIT"
                 self.no_signal_reason = "Waiting for two completed service games"
-        if self.browser_open:
-            event = getattr(ctx, "event_id", None) or str(getattr(ctx, "market_ticker", "")).rsplit("-", 1)[0]
-            series = event.split("-")[0].lower()
-            await self._navigate(f"https://kalshi.com/markets/{series}/{event.lower()}")
-            self._page_text = await self._read_text()
-            if re.search(r"Begins (?:on|in)|not started", self._page_text or "", re.I) and not parse_kalshi_board(self._page_text):
-                self._cursor += 1
-                self.viewing_id = None
-                self.no_signal_reason = "Opened match has not started; moving to the next live market"
-                return True
+        event = getattr(ctx, "event_id", None) or str(getattr(ctx, "market_ticker", "")).rsplit("-", 1)[0]
+        series = event.split("-")[0].lower()
+        url = f"https://kalshi.com/markets/{series}/{event.lower()}"
+        text = await self.hosted.observe(
+            "Open "
+            + url
+            + " in this read-only browser. The match is "
+            + label
+            + ". Do not click Buy or Sell. Do not type. Do not submit an order. "
+            + "Read the visible live score and reply with the set score, game score, and point score "
+            + "as digits separated by hyphens, plus a line Server: and the server's name."
+        )
+        if not text:
+            return False
+        self._page_text = text
+        if re.search(r"Begins (?:on|in)|not started", self._page_text or "", re.I) and not parse_kalshi_board(self._page_text):
+            self._cursor += 1
+            self.viewing_id = None
+            self.no_signal_reason = "Opened match has not started; moving to the next live market"
+            return True
         board = parse_kalshi_board(self._page_text)
         if board is not None:
             blocks, lines = self.counter.observe_board(board, time.time() * 1000)
@@ -421,10 +429,10 @@ class KalshiVisualSession:
             return
         state = parse_visible_score(self._page_text, ctx.player_a, ctx.player_b)
         if state is None:
-            if self.browser_open:
+            if getattr(getattr(ctx, "tennis", None), "source", None) != "kalshi_visual":
                 mark_score_unavailable(ctx)
-                self.no_signal_reason = "Score is not visible on the Kalshi page yet"
-            return
+            self.no_signal_reason = "Score is not visible in the ChatGPT browser view yet"
+            return False
         await self.note_score(state, ctx)
 
     async def note_score(self, state, ctx=None):
@@ -510,12 +518,10 @@ class KalshiVisualSession:
         return analyzer.state if analyzer else None
 
     async def inspect(self, ctx) -> dict | None:
-        """One read-only computer-use pass over the current Kalshi page."""
-        if not self._screenshot:
-            self._screenshot = await self._capture()
-        if not self._screenshot:
+        """One read-only pass over the ChatGPT browser's current Kalshi page."""
+        if not self.hosted.public_status()["connected"]:
             self.gpt_connected = False
-            self.reason = "The Kalshi page did not produce a screenshot"
+            self.reason = "GPT browser is not connected"
             return None
         players = ""
         if ctx is not None:
@@ -529,17 +535,16 @@ class KalshiVisualSession:
             "reasons, risks, reason. favored_side is PLAYER_A, PLAYER_B, or NEITHER. "
             "Use NEITHER when no current pattern is visible." + players
         )
-        from app.services.signals.ai_patterns import note_gpt_analysis_call, openai_error_message
+        from app.services.signals.ai_patterns import note_gpt_analysis_call
         note_gpt_analysis_call()
-        try:
-            text = await self._computer_loop(prompt)
-        except Exception as exc:
+        text = await self.hosted.observe(prompt)
+        if not text:
             self.gpt_connected = False
-            self.reason = openai_error_message(exc)
-            logger.warning("GPT ANALYSIS ERROR: %s", self.reason)
+            self.reason = self.hosted.error or "The ChatGPT browser did not return a match reading"
             return None
         self.gpt_connected = True
         self.reason = ""
+        self._page_text = f"{self._page_text}\n{text}"
         parsed = _json_object(text)
         if parsed:
             score = parsed.get("live_score") or parsed.get("set_game_state")
