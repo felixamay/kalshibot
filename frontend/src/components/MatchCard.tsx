@@ -245,19 +245,27 @@ export function MatchCard({
   );
 }
 
-function ScoreLink({ tennis }: { tennis?: MatchCardType["tennis"] }) {
-  const score = tennis && typeof tennis.set_score === "string" ? tennis.set_score : "";
+export function liveScoreLine(tennis?: { set_score?: unknown; source_url?: unknown; source?: unknown } | null) {
+  const score = tennis && typeof tennis.set_score === "string" ? tennis.set_score.trim() : "";
   const href = tennis && typeof tennis.source_url === "string" ? tennis.source_url : "";
-  if (!tennis?.available && !score) return null;
+  const source = tennis && typeof tennis.source === "string" ? tennis.source : "";
+  if (!score || source === "espn" || href.toLowerCase().includes("espn.com")) {
+    return { label: "SCORE UNAVAILABLE", href: "" };
+  }
+  return { label: `Live ${score}`, href };
+}
+
+function ScoreLink({ tennis }: { tennis?: MatchCardType["tennis"] }) {
+  const line = liveScoreLine(tennis);
   return (
     <p className="mt-1 font-mono text-[11px] uppercase tracking-wider text-mist/60">
-      {score ? `Live ${score}` : "Live"}
-      {href ? (
+      {line.label}
+      {line.href ? (
         <>
           {" "}
           ·{" "}
-          <a href={href} target="_blank" rel="noreferrer" className="text-signal-mint underline">
-            {href.includes("espn.com") ? "ESPN score" : "Live score"}
+          <a href={line.href} target="_blank" rel="noreferrer" className="text-signal-mint underline">
+            Live score
           </a>
         </>
       ) : null}

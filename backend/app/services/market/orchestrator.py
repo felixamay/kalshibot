@@ -459,7 +459,10 @@ class MarketOrchestrator:
         except Exception:
             live = None
         self.engine.discovery_health["live_verification_available"] = live is not None
-        live = live or []
+        live = [
+            item for item in (live or [])
+            if getattr(item, "source", "") != "espn" and "espn.com" not in str(getattr(item, "source_url", "") or "")
+        ]
         groups = {}
         for ticker, meta in self._market_meta.items():
             a, b, tournament = parse_players_from_market(meta)
@@ -527,7 +530,9 @@ class MarketOrchestrator:
                     ctx.tennis.point_feed_quality = point_feed.get('quality', 'unknown')
                     ctx.tennis.point_feed_basis = point_feed.get('basis', 'live')
             else:
-                ctx.tennis = None
+                # A Kalshi page reading stays until the next visual pass. ESPN is never filled in.
+                if getattr(getattr(ctx, "tennis", None), "source", None) != "kalshi_visual":
+                    ctx.tennis = None
             if created:
                 prices = extract_market_prices(meta)
                 await self.engine.on_market_update(ticker, yes_bid=prices["yes_bid"], yes_ask=prices["yes_ask"],

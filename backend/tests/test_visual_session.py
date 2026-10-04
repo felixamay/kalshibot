@@ -4,7 +4,15 @@ from types import SimpleNamespace
 import pytest
 
 from app.config import Settings
-from app.services.tennis.visual_session import KalshiVisualSession, VisualServiceCounter, action_allowed, parse_kalshi_board, parse_visible_score
+from app.services.tennis.visual_session import (
+    KalshiVisualSession,
+    VisualServiceCounter,
+    action_allowed,
+    apply_visual_score,
+    mark_score_unavailable,
+    parse_kalshi_board,
+    parse_visible_score,
+)
 
 
 def score(games, sets="0-0", server=None):
@@ -38,6 +46,32 @@ def test_kalshi_board_reads_sets_and_points_and_counts_two_games():
     blocks, lines = counter.observe_board(parse_kalshi_board("LIVE\n1-1\n0-0"), 4)
     assert lines == ["SERVICE GAME 2/2", "GPT PATTERN ANALYSIS STARTED"]
     assert len(blocks) == 1
+
+
+def test_kalshi_page_score_is_logged_and_a_blank_page_does_not_use_espn(caplog):
+    text = "Alejandro Moro Canas vs Alexander Ritschard\nLIVE\n1-1\n40-40\nServer: Alejandro Moro Canas"
+    board = parse_kalshi_board(text)
+    ctx = SimpleNamespace(match_id="itf", player_a="Alejandro Moro Canas", player_b="Alexander Ritschard", tournament="ITF", tennis=None)
+    counter = VisualServiceCounter()
+    caplog.set_level(logging.INFO)
+    apply_visual_score(ctx, board, counter, text)
+    assert ctx.tennis.available is True
+    assert ctx.tennis.source == "kalshi_visual"
+    assert ctx.tennis.source_url is None
+    assert ctx.tennis.set_score == "1-1 40-40"
+    assert ctx.tennis.server == "A"
+    assert "GPT SCORE READ: 1-1 40-40" in caplog.text
+    assert "CURRENT SERVER: Alejandro Moro Canas" in caplog.text
+    assert "SERVICE GAME COUNT: 0/2" in caplog.text
+    assert "espn" not in caplog.text.casefold()
+    blank = SimpleNamespace(match_id="blank", player_a="Ann", player_b="Bea", tennis=None)
+    mark_score_unavailable(blank)
+    assert blank.tennis.available is False
+    assert blank.tennis.set_score is None
+    assert blank.tennis.source == "kalshi_visual"
+    kept = SimpleNamespace(match_id="kept", player_a="Ann", player_b="Bea", tennis=SimpleNamespace(available=True, source="livetennis", source_url=None, set_score="6-3"))
+    mark_score_unavailable(kept)
+    assert kept.tennis.source == "livetennis"
 
 
 def test_visible_score_parses_the_displayed_set():

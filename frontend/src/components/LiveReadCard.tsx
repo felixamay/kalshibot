@@ -1,6 +1,7 @@
 "use client";
 
 import type { MatchCard } from "@/lib/types";
+import { liveScoreLine } from "@/components/MatchCard";
 
 export function LiveReadCard({
   match,
@@ -12,6 +13,7 @@ export function LiveReadCard({
   marketCount: number;
 }) {
   const stateLabel = match.display_state.replace(/_/g, " ");
+  const score = liveScoreLine(match.tennis);
 
   return (
     <section className="border border-white/10 bg-ink-800/80 p-5 md:p-8">
@@ -31,25 +33,18 @@ export function LiveReadCard({
           <p className="mt-1 font-mono text-xs uppercase tracking-widest text-mist/50">
             {match.tournament || "Tennis"} · {match.market_ticker}
           </p>
-          {typeof match.tennis?.set_score === "string" && match.tennis.set_score ? (
-            <p className="mt-2 font-mono text-sm text-signal-mint">
-              Live {match.tennis.set_score}
-              {typeof match.tennis.source_url === "string" ? (
-                <>
-                  {" "}
-                  ·{" "}
-                  <a
-                    href={match.tennis.source_url}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="underline"
-                  >
-                    {match.tennis.source_url.includes("espn.com") ? "ESPN score" : "Live score"}
-                  </a>
-                </>
-              ) : null}
-            </p>
-          ) : null}
+          <p className="mt-2 font-mono text-sm text-signal-mint">
+            {score.label}
+            {score.href ? (
+              <>
+                {" "}
+                ·{" "}
+                <a href={score.href} target="_blank" rel="noreferrer" className="underline">
+                  Live score
+                </a>
+              </>
+            ) : null}
+          </p>
         </div>
       </div>
 

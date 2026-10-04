@@ -43,6 +43,7 @@ def action_allowed(action: dict) -> bool:
 
 
 _POINT_RANK = {"0": 0, "15": 1, "30": 2, "40": 3, "AD": 4}
+_POINT_LABEL = {0: "0", 1: "15", 2: "30", 3: "40", 4: "AD"}
 
 
 def parse_kalshi_board(text: str):
@@ -50,20 +51,118 @@ def parse_kalshi_board(text: str):
     if not text:
         return None
     point = re.search(r"\b(0|15|30|40|AD)\s*[-–−]\s*(0|15|30|40|AD)\b", text, re.I)
-    sets = None
+    numeric = []
     for left, right in re.findall(r"\b(\d{1,2})\s*[-–−]\s*(\d{1,2})\b", text):
         if int(left) > 7 or int(right) > 7:
             continue
         if point and {left, right} <= {"0", "15", "30", "40"} and point.group(1) == left and point.group(2) == right:
             continue
-        sets = (int(left), int(right))
-        break
+        numeric.append((int(left), int(right)))
+    sets = numeric[0] if numeric else None
+    games = numeric[-1] if len(numeric) > 1 else None
     if point is None and sets is None:
         return None
     points = None
     if point:
         points = (_POINT_RANK[point.group(1).upper()], _POINT_RANK[point.group(2).upper()])
-    return SimpleNamespace(sets=sets, points=points)
+    return SimpleNamespace(sets=sets, points=points, games=games)
+
+
+def _mentions_server(text: str, name: str) -> bool:
+    if not text or not name:
+        return False
+    names = [name]
+    last = name.split()[-1]
+    if len(last) >= 3 and last.casefold() != name.casefold():
+        names.append(last)
+    for candidate in names:
+        if re.search(rf"(?i)(?:server|serving)[:\s]+{re.escape(candidate)}\b", text):
+            return True
+    return False
+
+
+def visible_server(text: str, player_a: str, player_b: str):
+    """A or B when the Kalshi page names the server."""
+    a = _mentions_server(text, player_a)
+    b = _mentions_server(text, player_b)
+    if a and not b:
+        return "A"
+    if b and not a:
+        return "B"
+    return None
+
+
+def format_visual_score(board) -> str:
+    parts = []
+    if board.sets:
+        parts.append(f"{board.sets[0]}-{board.sets[1]}")
+    games = getattr(board, "games", None)
+    if games:
+        parts.append(f"{games[0]}-{games[1]}")
+    if board.points:
+        parts.append(f"{_POINT_LABEL[board.points[0]]}-{_POINT_LABEL[board.points[1]]}")
+    return " ".join(parts)
+
+
+def apply_visual_score(ctx, board, counter, page_text: str) -> None:
+    """Attach the Kalshi page reading. Does not call ESPN."""
+    from app.services.tennis.provider import TennisLiveState
+
+    score = format_visual_score(board)
+    server = visible_server(page_text, ctx.player_a, ctx.player_b)
+    server_name = ctx.player_a if server == "A" else ctx.player_b if server == "B" else "unavailable"
+    logger.info("GPT SCORE READ: %s", score)
+    logger.info("CURRENT SERVER: %s", server_name)
+    logger.info("SERVICE GAME COUNT: %s", counter.label)
+    sets = f"{board.sets[0]}-{board.sets[1]}" if board.sets else None
+    points = None
+    if board.points:
+        points = f"{_POINT_LABEL[board.points[0]]}-{_POINT_LABEL[board.points[1]]}"
+    existing = getattr(ctx, "tennis", None)
+    state = TennisLiveState(
+        match_external_id=str(getattr(ctx, "match_id", "") or "kalshi-visual"),
+        player_a=ctx.player_a,
+        player_b=ctx.player_b,
+        tournament=getattr(ctx, "tournament", None),
+        server=server,
+        point_score=points,
+        game_score=None,
+        set_score=score or None,
+        match_score=sets,
+        available=bool(score),
+        source="kalshi_visual",
+        source_url=None,
+    )
+    kept = existing is not None and getattr(existing, "source", "") not in ("espn", "kalshi_visual", "none", "")
+    kept = kept and "espn.com" not in str(getattr(existing, "source_url", "") or "")
+    if kept:
+        state.point_events = list(getattr(existing, "point_events", []) or [])
+        state.point_feed_available = bool(getattr(existing, "point_feed_available", False))
+        state.point_feed_note = getattr(existing, "point_feed_note", state.point_feed_note)
+        state.point_feed_quality = getattr(existing, "point_feed_quality", state.point_feed_quality)
+        state.point_feed_basis = getattr(existing, "point_feed_basis", state.point_feed_basis)
+        if state.server is None and getattr(existing, "server", None) in ("A", "B"):
+            state.server = existing.server
+    ctx.tennis = state
+
+
+def mark_score_unavailable(ctx) -> None:
+    """The page was read and has no score. Do not call ESPN."""
+    from app.services.tennis.provider import TennisLiveState
+
+    existing = getattr(ctx, "tennis", None)
+    source = str(getattr(existing, "source", "") or "")
+    url = str(getattr(existing, "source_url", "") or "")
+    if existing is not None and getattr(existing, "available", False) and source not in ("espn", "kalshi_visual", "none", "") and "espn.com" not in url:
+        return
+    ctx.tennis = TennisLiveState(
+        match_external_id=str(getattr(ctx, "match_id", "") or "kalshi-visual"),
+        player_a=getattr(ctx, "player_a", "") or "",
+        player_b=getattr(ctx, "player_b", "") or "",
+        available=False,
+        source="kalshi_visual",
+        source_url=None,
+    )
 
 
 def _service_game_winner(previous, current):
@@ -263,6 +362,7 @@ class KalshiVisualSession:
         board = parse_kalshi_board(self._page_text)
         if board is not None:
             blocks, lines = self.counter.observe_board(board, time.time() * 1000)
+            apply_visual_score(ctx, board, self.counter, self._page_text)
             for line in lines:
                 logger.info("%s", line)
             if "GPT PATTERN ANALYSIS STARTED" in lines:
@@ -276,6 +376,7 @@ class KalshiVisualSession:
         state = parse_visible_score(self._page_text, ctx.player_a, ctx.player_b)
         if state is None:
             if self.browser_open:
+                mark_score_unavailable(ctx)
                 self.no_signal_reason = "Score is not visible on the Kalshi page yet"
             return
         await self.note_score(state, ctx)

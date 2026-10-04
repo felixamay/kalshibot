@@ -5,7 +5,7 @@ import { ConnectionBadge } from "@/components/ConnectionBadge";
 import { ManualBetModal } from "@/components/ManualBetModal";
 import { LiveReadCard } from "@/components/LiveReadCard";
 import { StrategySettings } from "@/components/StrategySettings";
-import { MatchCard } from "@/components/MatchCard";
+import { MatchCard, liveScoreLine } from "@/components/MatchCard";
 import { PrimarySignalCard } from "@/components/PrimarySignalCard";
 import { useLiveFeed } from "@/hooks/useLiveFeed";
 import { considerYesAlert, enableSignalAudio, playSignalAudio, signalAlertKey } from "@/lib/signalAudio";
@@ -294,11 +294,7 @@ export default function HomePage() {
           />
         ) : rankedMatches.length > 0 ? (
           <div className="border border-dashed border-white/15 p-5 font-mono text-sm text-mist/60">
-            {rankedMatches[0].player_a} vs {rankedMatches[0].player_b} is live
-            {rankedMatches[0].tennis && typeof rankedMatches[0].tennis.set_score === "string"
-              ? ` (${rankedMatches[0].tennis.set_score})`
-              : ""}
-            . No bet yet. {rankedMatches[0].hold_reason}
+            {rankedMatches[0].player_a} vs {rankedMatches[0].player_b} is live · {liveScoreLine(rankedMatches[0].tennis).label}. No bet yet. {rankedMatches[0].hold_reason}
           </div>
         ) : dashboard == null ? (
           <div className="border border-dashed border-white/15 p-5 font-mono text-sm text-mist/60">
