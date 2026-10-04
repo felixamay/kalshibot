@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from pathlib import Path
 
 import httpx
@@ -107,6 +108,10 @@ def environment_alive_from(payload: dict) -> bool:
     return bool((payload or {}).get("id"))
 
 
+class BrowserBusy(RuntimeError):
+    """The hosted browser refused a new turn and should be left alone briefly."""
+
+
 def error_text(status: int, payload: dict) -> str:
     err = payload.get("error") if isinstance(payload, dict) else None
     if isinstance(err, dict) and err.get("message"):
@@ -177,6 +182,7 @@ class OpenAIHostedBrowser:
         self._handled: set[str] = set()
         self._owns_transport = transport is None
         self._lock = asyncio.Lock()
+        self._busy_until = 0.0
 
     def public_status(self) -> dict:
         connected = (
@@ -286,6 +292,8 @@ class OpenAIHostedBrowser:
         if not getattr(self.settings, "openai_api_key", ""):
             self.error = "OPENAI_API_KEY is not configured"
             return None
+        if time.time() < self._busy_until:
+            return None
         if not self.public_status()["connected"]:
             await self.start()
         if not self.public_status()["connected"]:
@@ -293,6 +301,8 @@ class OpenAIHostedBrowser:
         async with self._lock:
             try:
                 text = await self._run_turn(instruction)
+            except BrowserBusy:
+                return None
             except Exception as exc:
                 logger.warning("OpenAI browser observation: %s", type(exc).__name__)
                 return None
@@ -333,6 +343,8 @@ class OpenAIHostedBrowser:
                 if event is None:
                     break
                 finished = await self._handle_event(event)
+        except BrowserBusy:
+            raise
         except Exception as exc:
             self.state = "DISCONNECTED"
             self.error = f"OpenAI browser stream disconnected: {type(exc).__name__}"
@@ -429,6 +441,11 @@ class OpenAIHostedBrowser:
         status, payload = await self._request(
             "POST", f"/v1/agents/sessions/{self.session_id}/events", {"events": events}
         )
+        if status == 503:
+            self.error = error_text(status, payload)
+            self._busy_until = time.time() + 60
+            logger.warning("OpenAI browser is busy. Next score read is in 60s. %s", self.error)
+            raise BrowserBusy(self.error)
         if status >= 400:
             self.error = error_text(status, payload)
             raise RuntimeError(self.error)

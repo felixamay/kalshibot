@@ -8,6 +8,7 @@ import pytest
 from app.config import Settings
 from app.services.tennis.openai_browser import (
     VERIFICATION_TASK,
+    BrowserBusy,
     OpenAIHostedBrowser,
     action_is_trade,
     approval_event,
@@ -186,6 +187,24 @@ async def test_observe_reuses_the_open_kalshi_browser(tmp_path):
     ]
     assert messages
     assert "Buy" in messages[0][2]["events"][0]["input"][0]["content"][0]["text"]
+
+
+@pytest.mark.asyncio
+async def test_busy_browser_pauses_the_next_score_read(tmp_path):
+    hosted = browser(tmp_path)
+
+    async def request(method, path, json_body=None):
+        return 503, {"error": {"message": "The browser is busy"}}
+
+    hosted.transport.request = request
+    hosted.session_id = "sess_test"
+    try:
+        await hosted._post_events([user_message("Read the Kalshi score. Do not click Buy.")])
+    except BrowserBusy as exc:
+        assert "busy" in str(exc)
+    else:
+        raise AssertionError("expected the browser to report that it is busy")
+    assert hosted._busy_until > __import__("time").time()
 
 
 @pytest.mark.asyncio
