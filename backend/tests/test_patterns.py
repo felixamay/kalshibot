@@ -144,7 +144,25 @@ def test_three_successful_observations_are_bet_eligible():
     two = PatternEngine(settings())
     for index in range(2):
         seed_pullback(two, "KX", 1_000 + index, 56, 53, 60, vol=1)
-    waiting = two.assess(
+    suggested = two.assess(
+        ticker="KX",
+        points=developing_pullback(),
+        book=early_book(58),
+        confirmation_count=0,
+        baseline_volatility_override=1,
+        player_a="Osaka",
+    )
+    assert suggested.successes == 2
+    assert suggested.success_rate is not None and suggested.success_rate > 0.70
+    assert suggested.decision in ("PATTERN_ENTRY_SIGNAL", "STRONG_PATTERN_SIGNAL"), suggested.explanation
+    assert "Osaka" in suggested.explanation
+
+    mixed = PatternEngine(settings())
+    seed_pullback(mixed, "KX", 1_000, 56, 53, 60, vol=1)
+    missed = seed_pullback(mixed, "KX", 2_000, 56, 53, 60, vol=1)
+    missed.success_or_failure = "failure"
+    missed.result = "failure"
+    waiting = mixed.assess(
         ticker="KX",
         points=developing_pullback(),
         book=early_book(58),
@@ -153,6 +171,7 @@ def test_three_successful_observations_are_bet_eligible():
         player_a="Osaka",
     )
     assert waiting.successes < 3
+    assert waiting.success_rate is not None and waiting.success_rate <= 0.70
     assert waiting.decision not in ("PATTERN_ENTRY_SIGNAL", "STRONG_PATTERN_SIGNAL"), waiting.explanation
 
 
@@ -217,6 +236,27 @@ def test_three_successes_stay_blocked_when_the_setup_is_invalid():
     )
     assert fourth_not_required == "PATTERN_ENTRY_SIGNAL"
     assert tradeable is True
+
+    suggested, tradeable, blockers, reasons = engine._decide(
+        book=book, **{**shared, "observed_success_count": 1, "observed_success_rate": 0.71}
+    )
+    assert suggested == "PATTERN_ENTRY_SIGNAL"
+    assert tradeable is True
+    assert blockers == []
+    assert "over 70%" in reasons[0]
+
+    even, tradeable, _blockers, _reasons = engine._decide(
+        book=book, **{**shared, "observed_success_count": 1, "observed_success_rate": 0.70}
+    )
+    assert even not in ("PATTERN_ENTRY_SIGNAL", "STRONG_PATTERN_SIGNAL")
+    assert tradeable is False
+
+    stale_rate, tradeable, blockers, _reasons = engine._decide(
+        book=stale, **{**shared, "observed_success_count": 1, "observed_success_rate": 0.90}
+    )
+    assert stale_rate not in ("PATTERN_ENTRY_SIGNAL", "STRONG_PATTERN_SIGNAL")
+    assert tradeable is False
+    assert any("stale" in item.lower() for item in blockers)
 
 
 def test_occurrence_time_is_the_match_start():
@@ -294,7 +334,7 @@ async def test_a_match_that_has_not_started_is_not_a_bet():
 
 
 def test_low_confidence_early_pattern_waits_for_confirmation():
-    """Low confidence blocks entry even when a pullback is developing."""
+    """One clean success is over 70% and is suggested. A pattern with no history still waits."""
     engine = PatternEngine(settings())
     seed_pullback(engine, "KX", 1_000, 52, 49, 55, vol=1)
     once = engine.assess(
@@ -307,11 +347,10 @@ def test_low_confidence_early_pattern_waits_for_confirmation():
     )
     assert once.pattern_type == "PULLBACK_RECOVERY"
     assert once.stage in ("EARLY", "DEVELOPING")
-    assert once.decision in ("PATTERN_WATCH", "PATTERN_DEVELOPING"), once.explanation
-    assert once.tradeable is False
-    assert once.confirmation_needed == 3
-    assert once.reasons
-    assert "wait" in once.explanation.lower()
+    assert once.success_rate is not None and once.success_rate > 0.70
+    assert once.decision in ("PATTERN_ENTRY_SIGNAL", "STRONG_PATTERN_SIGNAL"), once.explanation
+    assert once.tradeable is True
+    assert "Player A" in once.explanation
     assert "confirmation" not in once.explanation.lower()
 
     fresh = PatternEngine(settings())

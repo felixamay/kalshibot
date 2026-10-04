@@ -778,6 +778,7 @@ class PatternEngine:
             evidence=evidence,
             discovered=prior_counts.get(pattern_type, 0) >= settings.min_pattern_occurrences,
             observed_success_count=successes,
+            observed_success_rate=success_rate,
         )
         confirming = not blockers and len(signals) >= 3 and decision in ("PATTERN_DEVELOPING", "PATTERN_ENTRY_SIGNAL", "STRONG_PATTERN_SIGNAL")
         tradeable = decision in ("PATTERN_ENTRY_SIGNAL", "STRONG_PATTERN_SIGNAL")
@@ -1612,6 +1613,7 @@ class PatternEngine:
         evidence: list[str],
         discovered: bool = False,
         observed_success_count: int = 0,
+        observed_success_rate: Optional[float] = None,
     ) -> tuple[str, bool, list[str], list[str]]:
         settings = self.settings
         blockers: list[str] = []
@@ -1640,9 +1642,11 @@ class PatternEngine:
             blockers.append("Spread is not acceptable")
         if book.liquidity_quality in ("LOW", "VERY_LOW") or book.depth_bid + book.depth_ask <= 0:
             blockers.append("Liquidity is insufficient or unavailable")
-        # Three successful repeats of this same pattern in the current match
-        # are enough. A fourth success is not required.
-        if observed_success_count >= 3:
+        # Three successful repeats, or an observed success rate over 70%, are enough.
+        # A fourth success is not required. Exactly 70% does not suggest a bet.
+        if observed_success_count >= 3 or (
+            observed_success_rate is not None and observed_success_rate > 0.70
+        ):
             eligible_blockers = list(blockers)
             if book.momentum < 0 and book.imbalance < 0:
                 eligible_blockers.append("Current confirmation contradicts the pattern")
@@ -1655,6 +1659,8 @@ class PatternEngine:
                 )
             if entry_score >= settings.strong_pattern_entry_score and confidence >= settings.strong_pattern_confidence:
                 return "STRONG_PATTERN_SIGNAL", True, [], ["Repeated pattern and market confirmation agree"]
+            if observed_success_rate is not None and observed_success_rate > 0.70:
+                return "PATTERN_ENTRY_SIGNAL", True, [], ["Observed success is over 70%"]
             return "PATTERN_ENTRY_SIGNAL", True, [], ["Same pattern succeeded 3 times in this match"]
         if confidence < settings.min_pattern_confidence:
             blockers.append("Low pattern confidence")
