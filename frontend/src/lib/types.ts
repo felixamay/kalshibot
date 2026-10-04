@@ -206,7 +206,14 @@ export interface TennisPoint {
 }
 
 export interface DashboardPayload {
-  discovery_health?: { events_checked?: number; markets_checked?: number; tennis_markets_found?: number; live_matches_found?: number; last_refresh_ms?: number; complete?: boolean; errors?: string[] };
+  discovery_health?: {
+    events_checked?: number; markets_checked?: number; tennis_markets_found?: number; live_matches_found?: number;
+    last_refresh_ms?: number; complete?: boolean; errors?: string[];
+    kalshi_live_matches_found?: number; ws_markets_subscribed?: number;
+    gpt_browser_connected?: "YES" | "NO" | string; gpt_viewing?: string;
+    service_games_counted?: string; last_gpt_analysis_ms?: number | null;
+    last_pattern_result?: string; no_signal_reason?: string;
+  };
   server_time_ms: number;
   connection_status: ConnectionStatus;
   live_match_count: number;

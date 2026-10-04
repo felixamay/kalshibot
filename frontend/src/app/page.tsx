@@ -66,9 +66,7 @@ export default function HomePage() {
   const [analysisSignal, setAnalysisSignal] = useState<LiveSignal | null>(null);
 
   const rankedMatches = useMemo(() => {
-    const matches = (dashboard?.matches ?? []).filter(
-      (m) => m.is_live !== false && (m.live_evidence_expires_at_ms == null || m.live_evidence_expires_at_ms > serverNow)
-    );
+    const matches = (dashboard?.matches ?? []).filter((m) => m.is_live !== false);
     const group: Record<string, number> = {
       STRONG_PATTERN_SIGNAL: 0,
       STRONG_ENTRY_SIGNAL: 0,
@@ -338,6 +336,14 @@ export default function HomePage() {
         <h2>TENNIS DISCOVERY STATUS</h2>
         <p>Kalshi Events Checked: {dashboard.discovery_health.events_checked ?? "—"} · Kalshi Markets Checked: {dashboard.discovery_health.markets_checked ?? "—"}</p>
         <p>Tennis Markets Found: {dashboard.discovery_health.tennis_markets_found ?? "—"} · Live Tennis Matches Found: {dashboard.live_match_count}</p>
+        <p>Kalshi live matches found: {dashboard.discovery_health.kalshi_live_matches_found ?? dashboard.live_match_count}</p>
+        <p>WebSocket markets subscribed: {dashboard.discovery_health.ws_markets_subscribed ?? "—"}</p>
+        <p>GPT browser connected: {dashboard.discovery_health.gpt_browser_connected ?? "NO"}</p>
+        <p>GPT currently viewing: {dashboard.discovery_health.gpt_viewing ?? "—"}</p>
+        <p>Service games counted: {dashboard.discovery_health.service_games_counted ?? "0/2"}</p>
+        <p>Last GPT analysis time: {dashboard.discovery_health.last_gpt_analysis_ms ? new Date(dashboard.discovery_health.last_gpt_analysis_ms).toISOString() : "—"}</p>
+        <p>Last pattern result: {dashboard.discovery_health.last_pattern_result ?? "WAIT"}</p>
+        <p>Reason no signal was produced: {dashboard.discovery_health.no_signal_reason ?? "Waiting for two completed service games"}</p>
         <p>Last Discovery Refresh: {dashboard.discovery_health.last_refresh_ms ? new Date(dashboard.discovery_health.last_refresh_ms).toISOString() : "Pending"}</p>
         {!dashboard.discovery_health.complete && <p>Discovery incomplete — reconciliation pending</p>}
         {dashboard.discovery_health.errors?.map(e => <p key={e}>{e}</p>)}

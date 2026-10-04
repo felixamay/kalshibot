@@ -45,17 +45,33 @@ class TennisMarketDetector:
         a = yes or re.sub(r'(?i)^(?:Will\s+)?(.+?)\s+(?:wins?|to win).*$', r'\1', market.get('title', ''))
         return a or market.get('ticker', 'Unknown player'), 'Opponent unavailable'
 
+    _derivative = re.compile(r'(SPREAD|EXACT|SETWINNER|GTOTAL|GAMETOTAL|GAMESPREAD|ACES|HANDICAP|TOTALSETS|TIEBREAK|SETSWEEP|GWINNER|ANYSET|GAME)')
+
     def is_match_winner(self, market):
+        series = market.get('_series') or {}
+        ticker = f"{market.get('ticker', '')} {market.get('series_ticker', '')} {series.get('ticker', '')}".upper()
+        title = f"{market.get('title', '')} {series.get('title', '')} {' '.join(series.get('tags') or [])}"
+        if re.search(r'(?i)table tennis|pickleball|\bittf\b', f"{ticker} {title}"):
+            return False
+        if self._derivative.search(ticker) or re.search(r'(?i)\b(?:set|total|games|aces|handicap|spread|exact)\b', title):
+            return False
         if 'tennis_competitor' in market.get('custom_strike', {}):
             return True
         kind = str(market.get('contract_type') or market.get('market_kind') or '').lower()
         if kind:
             return kind in ('match_winner', 'winner')
-        title = market.get('title', '')
-        if re.search(r'(?i)\b(?:set|total|games|aces|handicap|spread)\b', title):
+        return bool(re.search(r'(?i)\b(?:wins?|to win|beat)\b', title) or 'MATCH' in ticker or 'DOUBLES' in ticker)
+
+    def is_match_series(self, series):
+        """Head-to-head tennis series from Kalshi series metadata, across tours."""
+        if not series or not self.detects(series):
             return False
-        return bool(re.search(r'(?i)\b(?:wins?|to win|beat)\b', title) or 'MATCH' in market.get('ticker', '').upper()
-                    or 'DOUBLES' in market.get('ticker', '').upper())
+        blob = f"{series.get('ticker', '')} {series.get('title', '')} {' '.join(series.get('tags') or [])}"
+        if re.search(r'(?i)table tennis|pickleball|\bittf\b', blob):
+            return False
+        if self._derivative.search(blob.upper()) or re.search(r'(?i)\b(?:spread|exact|total|aces|handicap|tiebreak)\b', blob):
+            return False
+        return bool(re.search(r'(?i)(match|doubles)', blob))
 
     def start_ms(self, market):
         for source in (market, market.get('_event', {})):
@@ -85,10 +101,14 @@ class TennisMarketDetector:
             except ValueError:
                 pass
         start = self.start_ms(market)
-        if score_live or market.get('is_live') is True or status == 'live' or (start is not None and start <= now_ms):
+        if score_live or market.get('is_live') is True or status == 'live':
             return 'LIVE'
-        if start is not None:
+        if start is not None and start > now_ms:
             return 'STARTING' if start - now_ms <= 300000 else 'UPCOMING'
+        # Open after the scheduled start is a live Kalshi match even when the
+        # score feed has not confirmed it. A missing start stays UNKNOWN.
+        if start is not None and start <= now_ms:
+            return 'LIVE'
         return 'UNKNOWN'
 
     def group_key(self, market):

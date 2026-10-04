@@ -76,19 +76,27 @@ class KalshiWebSocketClient:
         await self._ws.send(json.dumps(payload))
 
     async def subscribe_markets(self, tickers: list[str]) -> None:
-        self._subscribed_tickers.update(tickers)
-        if not self._ws:
+        ordered = [ticker for ticker in tickers if ticker]
+        self._subscribed_tickers.update(ordered)
+        for ticker in ordered:
+            logger.info("SUBSCRIBED MARKET: %s", ticker)
+        if not self._ws or not ordered:
             return
-        # Kalshi WS subscribe format (channels: orderbook_delta, ticker, trade)
+        # Quote channels are per market. Lifecycle is the existing read-only feed.
         msg = {
             "id": int(time.time() * 1000) % 1_000_000,
             "cmd": "subscribe",
             "params": {
                 "channels": ["orderbook_delta", "ticker", "trade"],
-                "market_tickers": list(tickers),
+                "market_tickers": ordered,
             },
         }
         await self.send(msg)
+        await self.send({
+            "id": (int(time.time() * 1000) + 1) % 1_000_000,
+            "cmd": "subscribe",
+            "params": {"channels": ["market_lifecycle_v2"]},
+        })
 
     async def start(self) -> None:
         self._stop.clear()

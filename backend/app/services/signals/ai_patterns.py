@@ -163,6 +163,18 @@ def _pretty_pattern(name: str) -> str:
     return " ".join(part.capitalize() for part in (name or "").replace("_", " ").split())
 
 
+def pattern_result_label(final: str, player_name: str = "") -> str:
+    """Visible result. Always one of the four labels, never blank."""
+    name = (player_name or "").strip()
+    if final == "YES" and name:
+        return f"YES — {name}"
+    if final == "WATCH":
+        return "WATCH"
+    if final == "WAIT":
+        return "WAIT"
+    return "NO RELIABLE PATTERN"
+
+
 class HybridDecisionEngine:
     """Kalshi numbers stay authoritative. GPT context cannot mint a YES alone."""
 
@@ -258,6 +270,7 @@ class HybridDecisionEngine:
                 "momentum": kalshi.get("momentum"),
             },
             "play_sound": play,
+            "pattern_result": pattern_result_label(final, player_name if final == "YES" else ""),
             "alert_key": f"{match_id}|{player if player else ''}|YES",
             "gpt_snapshot_time": snapshot_time,
             "gpt_response_time": response_time,

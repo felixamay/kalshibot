@@ -154,6 +154,7 @@ def test_hybrid_yes_needs_kalshi_and_obeys_the_sound_rules():
     engine = HybridDecisionEngine(settings())
     first = _call(engine, _gpt(), _book())
     assert first['final'] == 'YES'
+    assert first['pattern_result'] == 'YES — Ann'
     assert first['player_name'] == 'Ann'
     assert first['pattern'] == 'Pullback Recovery'
     assert first['play_sound'] is True
@@ -165,6 +166,7 @@ def test_hybrid_yes_needs_kalshi_and_obeys_the_sound_rules():
     assert other['final'] == 'YES' and other['player_name'] == 'Bea' and other['play_sound'] is True
     cancelled = _call(engine, _gpt(output=_view(favored_side='PLAYER_B', recommendation='AVOID', pattern_stage='BROKEN')), _book(time=1_007_000))
     assert cancelled['final'] == 'NO' and cancelled['play_sound'] is False
+    assert cancelled['pattern_result'] == 'NO RELIABLE PATTERN'
     replay = _call(engine, _gpt(output=_view(favored_side='PLAYER_B')), _book(imbalance=-0.44, time=1_008_000))
     assert replay['final'] == 'YES' and replay['play_sound'] is False
     waited = _call(engine, _gpt(output=_view(recommendation='WAIT')), _book(time=1_009_000))

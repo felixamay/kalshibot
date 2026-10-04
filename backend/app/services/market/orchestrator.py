@@ -108,6 +108,9 @@ class MarketOrchestrator:
         self._reconcile = asyncio.Event()
         self._books = {}
         self._ws_sequences = {}
+        from app.services.tennis.visual_session import KalshiVisualSession
+        self.visual = KalshiVisualSession(self.settings, self.engine)
+        self._visual_enabled = False
 
     async def start(self) -> None:
         self._stop.clear()
@@ -117,11 +120,13 @@ class MarketOrchestrator:
             on_status=self._on_ws_status,
         )
         await self.ws.start()
+        self._visual_enabled = True
         self._tasks = [
             asyncio.create_task(self._discovery_loop(), name="discovery"),
             asyncio.create_task(self._poll_loop(), name="poll"),
             asyncio.create_task(self._expiry_loop(), name="expiry"),
             asyncio.create_task(self._tennis_loop(), name="tennis"),
+            asyncio.create_task(self.visual.start(), name="kalshi-visual"),
         ]
         logger.info("MarketOrchestrator started")
 
@@ -132,6 +137,7 @@ class MarketOrchestrator:
         for t in self._tasks:
             t.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
+        await self.visual.stop()
         await self.client.close()
         await self.tennis.close()
 
@@ -238,6 +244,9 @@ class MarketOrchestrator:
             )
 
     async def _discovery_loop(self) -> None:
+        # Restore current match contracts promptly while the exhaustive scan
+        # reconciles every sport and discovers additional tennis series.
+        await self._prime_match_markets()
         while not self._stop.is_set():
             try:
                 await self._discover()
@@ -249,6 +258,31 @@ class MarketOrchestrator:
                 self._reconcile.clear()
             except asyncio.TimeoutError:
                 pass
+
+    async def _prime_match_markets(self) -> None:
+        detector = TennisMarketDetector()
+        series_tickers = []
+        try:
+            data = await self.client.get_series_list()
+            series_tickers = [s["ticker"] for s in data.get("series", []) if s.get("ticker") and detector.is_match_series(s)]
+        except Exception as exc:
+            logger.warning('Initial tennis series: %s', type(exc).__name__)
+        for series in series_tickers:
+            cursor = None
+            await asyncio.sleep(0.2)
+            try:
+                while True:
+                    data = await self.client.get_markets(status='open', series_ticker=series, limit=200, cursor=cursor)
+                    for market in data.get('markets', []):
+                        if market.get('ticker'):
+                            self._market_meta[market['ticker']] = market
+                    cursor = data.get('cursor')
+                    if not cursor:
+                        break
+            except Exception as exc:
+                logger.warning('Initial tennis discovery %s: %s', series, type(exc).__name__)
+        if self._market_meta:
+            await self._link_scoreboard()
 
     async def _discover(self) -> None:
         markets = await self.client.search_tennis_markets()
@@ -403,11 +437,15 @@ class MarketOrchestrator:
         while not self._stop.is_set():
             try:
                 await self._link_scoreboard()
+                if self._visual_enabled:
+                    await self._observe_visual()
             except Exception as exc:
                 logger.warning("Tennis loop: %s", exc)
             try:
                 await asyncio.wait_for(
-                    self._stop.wait(), timeout=self.settings.tennis_poll_interval_seconds
+                    # Live evidence expires after 45s. A legacy quota-saving
+                    # interval must not prevent fresh fallback game updates.
+                    self._stop.wait(), timeout=min(30.0, max(5.0, self.settings.tennis_poll_interval_seconds))
                 )
             except asyncio.TimeoutError:
                 pass
@@ -417,9 +455,11 @@ class MarketOrchestrator:
         from app.services.tennis.espn import same_match
         detector = TennisMarketDetector()
         try:
-            live = await self.tennis.list_live_matches() or []
+            live = await self.tennis.list_live_matches()
         except Exception:
-            live = []
+            live = None
+        self.engine.discovery_health["live_verification_available"] = live is not None
+        live = live or []
         groups = {}
         for ticker, meta in self._market_meta.items():
             a, b, tournament = parse_players_from_market(meta)
@@ -433,6 +473,7 @@ class MarketOrchestrator:
             key = detector.group_key(meta)
             groups.setdefault(key, []).append((ticker, meta, state, a, b, tournament))
         linked = set()
+        subscribe = []
         for key, contracts in groups.items():
             names = {row[3] for row in contracts if row[3] and row[4] == "Opponent unavailable"}
             if len(names) == 2:
@@ -455,6 +496,7 @@ class MarketOrchestrator:
             if not detector.is_match_winner(meta):
                 continue
             linked.add(ticker)
+            subscribe.extend(row[0] for row in contracts if detector.is_match_winner(row[1]))
             created = ticker not in self.engine.snap.matches
             if created:
                 self.engine.register_match(match_id=str(uuid5(NAMESPACE_URL, f"kalshi:{meta.get('event_ticker') or ticker}")), player_a=a, player_b=b,
@@ -463,6 +505,9 @@ class MarketOrchestrator:
                 await self.engine.restore_match_history(self.engine.snap.matches[ticker])
             ctx = self.engine.snap.matches[ticker]
             ctx.score_confirmed = True
+            # Kalshi still lists this match open after the start. A 45s score
+            # timestamp must not take it off the board.
+            ctx.live_evidence_expires_at_ms = None
             ctx.match_status = "LIVE"
             ctx.event_id = meta.get("event_ticker")
             ctx.market_ids = [row[0] for row in contracts]
@@ -470,24 +515,59 @@ class MarketOrchestrator:
                 oriented = await self.tennis.get_live_match(a, b)
                 # Do not attach a reversed score to the YES contract.
                 ctx.tennis = oriented if oriented and oriented.available else None
+                if ctx.tennis:
+                    from app.services.tennis.points import orient_points
+                    from app.services.tennis.espn import same_player
+                    cursor = ctx.point_tracker.resume_seq if ctx.point_tracker.source_match_id == state.match_external_id else 0
+                    point_feed = await self.tennis.get_live_points(state.match_external_id, cursor)
+                    flip = same_player(a, state.player_b) and not same_player(a, state.player_a)
+                    ctx.tennis.point_events = orient_points(point_feed.get('points', []), flip)
+                    ctx.tennis.point_feed_available = point_feed.get('available', False)
+                    ctx.tennis.point_feed_note = point_feed.get('note', 'Point history unavailable')
+                    ctx.tennis.point_feed_quality = point_feed.get('quality', 'unknown')
+                    ctx.tennis.point_feed_basis = point_feed.get('basis', 'live')
             else:
                 ctx.tennis = None
             if created:
                 prices = extract_market_prices(meta)
                 await self.engine.on_market_update(ticker, yes_bid=prices["yes_bid"], yes_ask=prices["yes_ask"],
                     last_trade=prices["last_trade"], volume=prices["volume"], status=str(prices["status"]))
-            else:
-                await self.engine.on_tennis_update(ticker, status=str(extract_market_prices(meta)["status"]))
+            await self.engine.on_tennis_update(ticker, status=str(extract_market_prices(meta)["status"]))
         for ticker, ctx in self.engine.snap.matches.items():
             if ticker not in linked:
                 ctx.score_confirmed = False
                 ctx.match_status = "ENDED" if ticker not in self._market_meta else detector.state(self._market_meta[ticker], time.time() * 1000)
                 await self.engine.on_market_update(ticker, status="CLOSED" if ticker not in self._market_meta else "SUSPENDED")
-        if linked != self._linked_tickers and self.ws:
-            await self.ws.subscribe_markets(sorted(linked))
-        self._linked_tickers = linked
+        subscribe = sorted(set(subscribe))
+        if set(subscribe) != self._linked_tickers and self.ws:
+            await self.ws.subscribe_markets(subscribe)
+        self._linked_tickers = set(subscribe)
+        discovered = self.engine.discovery_health.get("tennis_markets_found")
+        if discovered is None:
+            discovered = len(self._market_meta)
+        logger.info("TENNIS MARKETS DISCOVERED: %s", discovered)
+        logger.info("LIVE TENNIS MATCHES: %s", len(linked))
         self.engine.discovery_health["live_matches_found"] = len(linked)
-        self.engine.discovery_health["live_markets_found"] = sum(len(ctx.market_ids) for ticker, ctx in self.engine.snap.matches.items() if ticker in linked)
+        self.engine.discovery_health["live_markets_found"] = len(subscribe)
+        self._publish_diagnostics(len(linked))
 
     async def _link_traded_kalshi_matches(self) -> None:
         await self._link_scoreboard()
+
+    def _publish_diagnostics(self, live_matches: int) -> None:
+        health = self.engine.discovery_health
+        if not isinstance(health, dict):
+            health = {}
+            self.engine.discovery_health = health
+        health["kalshi_live_matches_found"] = live_matches
+        health["ws_markets_subscribed"] = len(getattr(self.ws, "_subscribed_tickers", ()) or ())
+        health.update(self.visual.diagnostics())
+
+    async def _observe_visual(self) -> None:
+        try:
+            live = [ctx for ctx in self.engine.snap.matches.values() if ctx.score_confirmed is True]
+            await self.visual.watch(live)
+        except Exception as exc:
+            logger.warning("Visual session: %s", type(exc).__name__)
+            self.visual.no_signal_reason = f"Visual session error: {type(exc).__name__}"
+        self._publish_diagnostics(sum(1 for ctx in self.engine.snap.matches.values() if ctx.score_confirmed is True))
