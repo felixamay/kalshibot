@@ -48,6 +48,22 @@ def test_kalshi_board_reads_sets_and_points_and_counts_two_games():
     assert len(blocks) == 1
 
 
+def test_displayed_game_score_steps_from_zero_to_two():
+    counter = VisualServiceCounter()
+    blocks, lines = counter.observe_board(parse_kalshi_board("6-4 2-3"), 1)
+    assert lines == []
+    assert counter.label == "0/2"
+    assert blocks == []
+    blocks, lines = counter.observe_board(parse_kalshi_board("6-4 3-3"), 2)
+    assert lines == ["SERVICE GAME 1/2"]
+    assert counter.label == "1/2"
+    assert blocks == []
+    blocks, lines = counter.observe_board(parse_kalshi_board("6-4 3-4"), 3)
+    assert lines == ["SERVICE GAME 2/2", "GPT PATTERN ANALYSIS STARTED"]
+    assert counter.label == "2/2"
+    assert len(blocks) == 1
+
+
 def test_kalshi_page_score_is_logged_and_a_blank_page_does_not_use_espn(caplog):
     text = "Alejandro Moro Canas vs Alexander Ritschard\nLIVE\n1-1\n40-40\nServer: Alejandro Moro Canas"
     board = parse_kalshi_board(text)
@@ -126,7 +142,7 @@ async def test_visual_pattern_yes_requires_kalshi_confirmation():
     flat = MarketState("T", yes_bid=49, yes_ask=50, depth_yes=5000, depth_no=5000, imbalance=0, last_update_ms=now)
     session.engine.snap.analyzers["T"] = SimpleNamespace(state=flat)
     label, reason = await session.conclude(ctx, None)
-    assert label == "WATCH"
+    assert label == "WATCH — Ann"
     assert "do not confirm" in reason
     live = MarketState("T", yes_bid=49, yes_ask=50, depth_yes=5000, depth_no=2000, imbalance=0.44, last_update_ms=now)
     session.engine.snap.analyzers["T"] = SimpleNamespace(state=live)

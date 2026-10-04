@@ -118,6 +118,8 @@ def apply_visual_score(ctx, board, counter, page_text: str) -> None:
     points = None
     if board.points:
         points = f"{_POINT_LABEL[board.points[0]]}-{_POINT_LABEL[board.points[1]]}"
+    games = getattr(board, "games", None) or (counter.games if counter.games != (0, 0) else None)
+    game_score = f"{games[0]}-{games[1]}" if games else None
     existing = getattr(ctx, "tennis", None)
     state = TennisLiveState(
         match_external_id=str(getattr(ctx, "match_id", "") or "kalshi-visual"),
@@ -126,7 +128,7 @@ def apply_visual_score(ctx, board, counter, page_text: str) -> None:
         tournament=getattr(ctx, "tournament", None),
         server=server,
         point_score=points,
-        game_score=None,
+        game_score=game_score,
         set_score=score or None,
         match_score=sets,
         available=bool(score),
@@ -215,25 +217,46 @@ class VisualServiceCounter:
         self.games = (0, 0)
         self.sets = None
         self.points = None
+        self._board_games = None
+        self._seeded = False
 
     def observe_board(self, board, now):
         if board is None:
             return [], []
-        if self.sets is None and self.points is None:
+        if not self._seeded:
+            self._seeded = True
             self.sets = board.sets
             self.points = board.points
+            self._board_games = board.games
+            # The first visible game score is the baseline. Games already
+            # finished before this reading are not invented.
+            if board.games:
+                self.games = board.games
             return self.note(self._board_state(board), now)
-        if board.sets and self.sets and board.sets != self.sets:
-            winner = "A" if board.sets[0] > self.sets[0] else "B" if board.sets[1] > self.sets[1] else None
-            if winner:
-                self.games = (self.games[0] + (winner == "A"), self.games[1] + (winner == "B"))
-        else:
-            winner = _service_game_winner(self.points, board.points)
-            if winner:
-                self.games = (self.games[0] + (winner == "A"), self.games[1] + (winner == "B"))
+        self._advance(board)
         self.sets = board.sets
         self.points = board.points
+        self._board_games = board.games
         return self.note(self._board_state(board), now)
+
+    def _advance(self, board):
+        """One completed game from the displayed game score, or from the point score."""
+        if board.games and self._board_games:
+            delta = (board.games[0] - self._board_games[0], board.games[1] - self._board_games[1])
+            if board.sets == self.sets and delta in ((1, 0), (0, 1)):
+                self.games = board.games
+                return
+            if (board.sets and self.sets and sum(board.sets) == sum(self.sets) + 1
+                    and board.games in ((0, 0), (1, 0), (0, 1))):
+                self.games = board.games
+                return
+        winner = None
+        if board.sets and self.sets and board.sets != self.sets and not (board.games and self._board_games):
+            winner = "A" if board.sets[0] > self.sets[0] else "B" if board.sets[1] > self.sets[1] else None
+        elif not (board.games and self._board_games and board.games != self._board_games):
+            winner = _service_game_winner(self.points, board.points)
+        if winner:
+            self.games = (self.games[0] + (winner == "A"), self.games[1] + (winner == "B"))
 
     def _board_state(self, board):
         sets = board.sets or (0, 0)
@@ -250,13 +273,17 @@ class VisualServiceCounter:
         blocks = self.tracker.update(state, now)
         added = len(self.tracker.games) - before
         lines = []
+        if added:
+            logger.info("SERVICE GAME EVENTS: %s", len(self.tracker.games))
         if added >= 1 and (not blocks or added >= 2):
             lines.append("SERVICE GAME 1/2")
-            self.shown = 1
+            self.shown = max(self.shown, 1)
         if blocks:
             lines.append("SERVICE GAME 2/2")
             lines.append("GPT PATTERN ANALYSIS STARTED")
             self.shown = 2
+        elif added and self.shown < 2:
+            self.shown = min(2, len(self.tracker.pending) or self.shown)
         return blocks, lines
 
     @property
@@ -389,6 +416,8 @@ class KalshiVisualSession:
                 self.no_signal_reason = reason
             elif self.counter.shown == 0:
                 self.no_signal_reason = "Waiting for two completed service games"
+            if self.engine is not None and getattr(ctx, "market_ticker", None):
+                await self.engine.on_tennis_update(ctx.market_ticker)
             return
         state = parse_visible_score(self._page_text, ctx.player_a, ctx.player_b)
         if state is None:
@@ -426,10 +455,10 @@ class KalshiVisualSession:
         if visual.get("recommendation") == "WAIT" or visual.get("pattern_stage") == "BROKEN":
             return "WAIT" if visual.get("recommendation") == "WAIT" else "NO RELIABLE PATTERN", visual.get("reason") or "GPT did not confirm a current pattern"
         if ctx is None or self.engine is None:
-            return "WATCH", "GPT sees a pattern; live Kalshi numbers are not attached"
+            return _watch_label(visual, ctx), "GPT sees a pattern; live Kalshi numbers are not attached"
         market = self._market(ctx)
         if market is None:
-            return "WATCH", "GPT sees a pattern; live Kalshi numbers are not attached"
+            return _watch_label(visual, ctx), "GPT sees a pattern; live Kalshi numbers are not attached"
         if market.data_age_ms > self.settings.max_data_age_ms or str(market.status).upper() != "OPEN":
             return "WATCH", "GPT sees a pattern; the live Kalshi quote is stale"
         now = time.time() * 1000
@@ -469,7 +498,7 @@ class KalshiVisualSession:
         label = pattern_result_label(signal.get("final") or "", signal.get("player_name") or "")
         if label.startswith("YES —"):
             return label, "—"
-        if label == "WATCH":
+        if label.startswith("WATCH"):
             return label, "GPT sees a pattern; live Kalshi numbers do not confirm the direction"
         if label == "WAIT":
             return label, signal.get("message") or "GPT recommended waiting"
@@ -500,12 +529,14 @@ class KalshiVisualSession:
             "reasons, risks, reason. favored_side is PLAYER_A, PLAYER_B, or NEITHER. "
             "Use NEITHER when no current pattern is visible." + players
         )
+        from app.services.signals.ai_patterns import note_gpt_analysis_call, openai_error_message
+        note_gpt_analysis_call()
         try:
             text = await self._computer_loop(prompt)
         except Exception as exc:
             self.gpt_connected = False
-            self.reason = f"Computer-use session failed: {type(exc).__name__}"
-            logger.warning("Computer-use session: %s", type(exc).__name__)
+            self.reason = openai_error_message(exc)
+            logger.warning("GPT ANALYSIS ERROR: %s", self.reason)
             return None
         self.gpt_connected = True
         self.reason = ""
@@ -677,6 +708,16 @@ class _Cdp:
 
     async def close(self):
         await self.ws.close()
+
+
+def _watch_label(visual: dict, ctx) -> str:
+    side = visual.get("favored_side")
+    name = ""
+    if ctx is not None and side == "PLAYER_A":
+        name = ctx.player_a
+    elif ctx is not None and side == "PLAYER_B":
+        name = ctx.player_b
+    return f"WATCH — {name}" if name else "WATCH"
 
 
 def _json_object(text: str) -> dict | None:

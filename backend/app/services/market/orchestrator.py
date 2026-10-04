@@ -108,6 +108,9 @@ class MarketOrchestrator:
         self._reconcile = asyncio.Event()
         self._books = {}
         self._ws_sequences = {}
+        self._live_updates = 0
+        self._last_live_update: dict[str, str] = {}
+        self._last_live_log = 0.0
         from app.services.tennis.visual_session import KalshiVisualSession
         self.visual = KalshiVisualSession(self.settings, self.engine)
         self._visual_enabled = False
@@ -140,6 +143,14 @@ class MarketOrchestrator:
         await self.visual.stop()
         await self.client.close()
         await self.tennis.close()
+
+    def _note_live_update(self, ticker: str) -> None:
+        self._live_updates += 1
+        self._last_live_update[ticker] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        now = time.time()
+        if now - self._last_live_log >= 30:
+            self._last_live_log = now
+            logger.info("LIVE UPDATES RECEIVED: %s", self._live_updates)
 
     async def _on_ws_status(self, status: ConnectionStatus) -> None:
         # REST still serves quotes while the Kalshi socket retries.
@@ -231,6 +242,7 @@ class MarketOrchestrator:
                 best_no = max((p for p, q in book["no"].items() if q > 0), default=0)
                 yes_ask = 100 - best_no
                 last = None
+            self._note_live_update(ticker)
             await self.engine.on_market_update(
                 ticker,
                 yes_bid=yes_bid,
@@ -336,6 +348,7 @@ class MarketOrchestrator:
                 if not ticker or ticker not in self.engine.snap.matches:
                     continue
                 prices = extract_market_prices(m)
+                self._note_live_update(ticker)
                 await self.engine.on_market_update(
                     ticker,
                     yes_bid=prices["yes_bid"],  # type: ignore[arg-type]
@@ -388,6 +401,7 @@ class MarketOrchestrator:
                     no_cents = _price_to_cents(best_no)
                     if no_cents is not None:
                         yes_ask = round(100.0 - no_cents, 2)
+                self._note_live_update(ticker)
                 await self.engine.on_market_update(
                     ticker,
                     yes_bid=yes_bid,
@@ -551,7 +565,18 @@ class MarketOrchestrator:
         if discovered is None:
             discovered = len(self._market_meta)
         logger.info("TENNIS MARKETS DISCOVERED: %s", discovered)
+        logger.info("LIVE TENNIS MATCHES CREATED: %s", len(linked))
         logger.info("LIVE TENNIS MATCHES: %s", len(linked))
+        logger.info("WEBSOCKET SUBSCRIPTIONS: %s", len(subscribe))
+        logger.info("LIVE UPDATES RECEIVED: %s", self._live_updates)
+        for ticker in sorted(linked):
+            ctx = self.engine.snap.matches.get(ticker)
+            if ctx is None:
+                continue
+            logger.info("MATCH FOUND: %s vs %s", ctx.player_a, ctx.player_b)
+            logger.info("MARKET TICKER: %s", ticker)
+            logger.info("SUBSCRIBED: YES")
+            logger.info("LAST LIVE UPDATE: %s", self._last_live_update.get(ticker, "none"))
         self.engine.discovery_health["live_matches_found"] = len(linked)
         self.engine.discovery_health["live_markets_found"] = len(subscribe)
         self._publish_diagnostics(len(linked))

@@ -2,12 +2,15 @@
 from __future__ import annotations
 import asyncio
 import json
+import logging
 import time
 from typing import Literal
 from uuid import uuid4
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+logger = logging.getLogger(__name__)
 
 
 class PatternAnalysis(BaseModel):
@@ -163,13 +166,44 @@ def _pretty_pattern(name: str) -> str:
     return " ".join(part.capitalize() for part in (name or "").replace("_", " ").split())
 
 
+def openai_error_message(exc: BaseException) -> str:
+    """API status and message only. Never the key, the request URL, or headers."""
+    response = getattr(exc, "response", None)
+    if response is not None:
+        detail = ""
+        try:
+            body = response.json()
+            err = body.get("error") if isinstance(body, dict) else None
+            if isinstance(err, dict):
+                detail = str(err.get("message") or "")
+            elif isinstance(err, str):
+                detail = err
+        except Exception:
+            detail = ""
+        if not detail:
+            detail = str(getattr(response, "text", "") or "")[:240]
+        status = getattr(response, "status_code", "")
+        return f"HTTP {status}: {detail}".strip()[:300]
+    return f"{type(exc).__name__}: {exc}"[:300]
+
+
+_gpt_analysis_calls = 0
+
+
+def note_gpt_analysis_call() -> int:
+    global _gpt_analysis_calls
+    _gpt_analysis_calls += 1
+    logger.info("GPT ANALYSIS CALLS: %s", _gpt_analysis_calls)
+    return _gpt_analysis_calls
+
+
 def pattern_result_label(final: str, player_name: str = "") -> str:
     """Visible result. Always one of the four labels, never blank."""
     name = (player_name or "").strip()
     if final == "YES" and name:
         return f"YES — {name}"
     if final == "WATCH":
-        return "WATCH"
+        return f"WATCH — {name}" if name else "WATCH"
     if final == "WAIT":
         return "WAIT"
     return "NO RELIABLE PATTERN"
@@ -270,7 +304,7 @@ class HybridDecisionEngine:
                 "momentum": kalshi.get("momentum"),
             },
             "play_sound": play,
-            "pattern_result": pattern_result_label(final, player_name if final == "YES" else ""),
+            "pattern_result": pattern_result_label(final, player_name if final in ("YES", "WATCH") else ""),
             "alert_key": f"{match_id}|{player if player else ''}|YES",
             "gpt_snapshot_time": snapshot_time,
             "gpt_response_time": response_time,

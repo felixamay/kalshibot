@@ -269,6 +269,9 @@ class KalshiReadOnlyClient:
                 if detector.detects(market, event, series.get(event.get("series_ticker"), {})):
                     found[market["ticker"]] = {**market, "_event": event}
         health.update(tennis_markets_found=len(found), complete=True, last_refresh_ms=time.time() * 1000)
+        logger.info("KALSHI EVENTS RECEIVED: %s", health["events_checked"])
+        logger.info("KALSHI MARKETS RECEIVED: %s", health["markets_checked"])
+        logger.info("TENNIS MARKETS CLASSIFIED: %s", len(found))
         return list(found.values())
 
 

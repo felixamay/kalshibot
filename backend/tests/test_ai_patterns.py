@@ -108,7 +108,7 @@ async def test_failure_fallback_and_stale_response_without_locking_market(monkey
     assert not engine.snap.signals
     monkeypatch.setattr(engine.ai_analyst,'analyze', AsyncMock(side_effect=httpx.ConnectError('offline')))
     await engine._run_ai(ctx,block,snapshot,True)
-    assert ctx.ai_analysis['message']=='AI ANALYSIS TEMPORARILY UNAVAILABLE'
+    assert ctx.ai_analysis['message']=='ConnectError: offline'
     await engine.on_market_update('T',yes_bid=49,yes_ask=50)
     assert engine.snap.analyzers['T'].state.yes_ask==50
     await engine.close()
@@ -148,6 +148,20 @@ def _gpt(**changes):
 
 def _call(engine, gpt, book, yes_side='PLAYER_A'):
     return engine.combine(gpt, book, match_id='m1', player_a='Ann', player_b='Bea', yes_side=yes_side)
+
+
+def test_openai_error_message_keeps_the_api_text():
+    import httpx
+    from app.services.signals.ai_patterns import openai_error_message, pattern_result_label
+
+    request = httpx.Request("POST", "https://api.openai.com/v1/responses")
+    response = httpx.Response(429, json={"error": {"message": "Rate limit reached for this model"}}, request=request)
+    exc = httpx.HTTPStatusError("nope", request=request, response=response)
+    assert openai_error_message(exc) == "HTTP 429: Rate limit reached for this model"
+    assert "api.openai.com" not in openai_error_message(exc)
+    assert pattern_result_label("WATCH", "Ann") == "WATCH — Ann"
+    assert pattern_result_label("WAIT") == "WAIT"
+    assert pattern_result_label("") == "NO RELIABLE PATTERN"
 
 
 def test_hybrid_yes_needs_kalshi_and_obeys_the_sound_rules():

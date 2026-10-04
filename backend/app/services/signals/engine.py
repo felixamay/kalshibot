@@ -286,6 +286,8 @@ class SignalEngine:
             ctx.last_feed_revision = ctx.tracker.revision
         if ctx.latest_reasoning and any(b.invalidated and b.block_id == ctx.latest_reasoning["block_id"] for b in ctx.tracker.blocks):
             ctx.latest_reasoning.update(reliable=False, decision="WAIT", reason="FEED CORRECTION — WAIT")
+        if len(ctx.tracker.games) != ctx.serves_seen:
+            logger.info("SERVICE GAME EVENTS: %s", len(ctx.tracker.games))
         ctx.serves_seen = len(ctx.tracker.games)
         ctx.pending_blocks.extend(completed)
 
@@ -346,7 +348,7 @@ class SignalEngine:
         if block.invalidated or len(block.games) != 2 or market.data_age_ms > self.settings.max_data_age_ms:
             return False
         if not self.settings.openai_api_key:
-            ctx.ai_analysis = {"status": "UNAVAILABLE", "message": "AI ANALYSIS TEMPORARILY UNAVAILABLE"}
+            ctx.ai_analysis = {"status": "UNAVAILABLE", "message": "OPENAI_API_KEY is not configured"}
             return False
         if deep and ctx.ai_task and not ctx.ai_task.done():
             return False
@@ -361,6 +363,8 @@ class SignalEngine:
         snapshot['deep_requested'] = deep
         ctx.ai_request_id = snapshot['analysis_request_id']
         ctx.ai_analysis = {"status": "PENDING", "message": "Analyzing completed ServeBlock"}
+        from app.services.signals.ai_patterns import note_gpt_analysis_call
+        note_gpt_analysis_call()
         task = asyncio.create_task(self._run_ai(ctx, block, snapshot, deep))
         ctx.ai_task = task
         self.ai_tasks.add(task)
@@ -428,10 +432,12 @@ class SignalEngine:
                     ctx.ai_analysis = {"status": "PENDING", "message": "Resolving disagreement with second opinion"}
         except asyncio.CancelledError:
             raise
-        except Exception:
-            # Never log response bodies or API credentials.
+        except Exception as exc:
+            from app.services.signals.ai_patterns import openai_error_message
+            message = openai_error_message(exc)
+            logger.warning("GPT ANALYSIS ERROR: %s", message)
             if ctx.ai_request_id == snapshot['analysis_request_id']:
-                ctx.ai_analysis = {"status": "UNAVAILABLE", "message": "AI ANALYSIS TEMPORARILY UNAVAILABLE"}
+                ctx.ai_analysis = {"status": "UNAVAILABLE", "message": message}
 
     async def close(self):
         tasks = list(self.ai_tasks)
