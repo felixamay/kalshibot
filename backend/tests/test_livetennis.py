@@ -4,6 +4,7 @@ import httpx
 import pytest
 
 from app.config import Settings
+from app.services.market.orchestrator import _kalshi_match_is_trading
 from app.services.tennis.livetennis import (
     LiveTennisProvider,
     parse_live_matches,
@@ -105,6 +106,7 @@ async def test_provider_reads_the_live_slate_and_caches_it():
         assert request.url.path.endswith("/matches")
         assert request.url.params["status"] == "live"
         assert request.headers["X-API-Key"]
+        assert request.headers["Authorization"].startswith("Bearer ")
         return httpx.Response(200, json=_SLATE)
 
     settings = Settings(
@@ -117,7 +119,10 @@ async def test_provider_reads_the_live_slate_and_caches_it():
     await provider._client.aclose()
     provider._client = httpx.AsyncClient(
         transport=httpx.MockTransport(handler),
-        headers={"X-API-Key": settings.tennis_api_key},
+        headers={
+            "X-API-Key": settings.tennis_api_key,
+            "Authorization": f"Bearer {settings.tennis_api_key}",
+        },
     )
     try:
         first = await provider.list_live_matches()
@@ -199,3 +204,37 @@ async def test_a_restart_during_a_rate_limit_keeps_the_last_slate(tmp_path, monk
     assert live[0].player_a == "Luis Guto Miguel / Eduardo Ribeiro"
     assert live[0].set_score == "7-5 4-3"
     assert live[0].point_score == "30-30"
+
+
+@pytest.mark.asyncio
+async def test_live_tennis_sends_the_key_as_bearer_and_x_api_key():
+    settings = Settings(
+        tennis_provider="livetennis",
+        tennis_api_key="test-key",
+        tennis_api_base_url="https://api.livetennisapi.com/api/public/v1",
+    )
+    provider = LiveTennisProvider(settings)
+    try:
+        assert provider._client.headers["X-API-Key"] == "test-key"
+        assert provider._client.headers["Authorization"] == "Bearer test-key"
+    finally:
+        await provider.close()
+
+
+def test_a_kalshi_match_that_just_traded_is_treated_as_live():
+    now = 1_000_000.0
+    assert _kalshi_match_is_trading(
+        {
+            "last_price_dollars": "0.29",
+            "updated_time": "1970-01-12T13:46:10+00:00",
+        },
+        now,
+    )
+    assert not _kalshi_match_is_trading(
+        {"last_price_dollars": "0.29", "updated_time": "1970-01-01T00:00:00+00:00"},
+        now,
+    )
+    assert not _kalshi_match_is_trading(
+        {"last_price_dollars": "0", "updated_time": "1970-01-12T13:46:10+00:00"},
+        now,
+    )

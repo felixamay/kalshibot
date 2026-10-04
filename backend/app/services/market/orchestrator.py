@@ -74,6 +74,23 @@ def extract_market_prices(m: dict[str, Any]) -> dict[str, Optional[float | str]]
     }
 
 
+def _kalshi_match_is_trading(market: dict[str, Any], now: float) -> bool:
+    """A last trade in the last half hour is the match that is still live on Kalshi."""
+    last = _to_float(market.get("last_price_dollars") or market.get("last_price"))
+    if last is None or last <= 0:
+        return False
+    raw = market.get("updated_time")
+    if not isinstance(raw, str) or not raw.strip():
+        return False
+    try:
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return (now - dt.timestamp()) <= 30 * 60
+
+
 def occurrence_start_ms(market: dict[str, Any]) -> Optional[float]:
     """Kalshi occurrence time is when the match is scheduled. None if we cannot tell."""
     raw = market.get("occurrence_datetime")
@@ -443,6 +460,9 @@ class MarketOrchestrator:
 
         live = await self.tennis.list_live_matches()
         if live is None:
+            live = []
+        if not live:
+            await self._link_traded_kalshi_matches()
             return
         linked: set[str] = set()
         for ticker, meta in self._market_meta.items():
@@ -502,6 +522,61 @@ class MarketOrchestrator:
         self._linked_tickers = linked
         logger.info(
             "Scoreboard link: %d markets checked, %d live contracts",
+            len(self._market_meta),
+            len(linked),
+        )
+
+    async def _link_traded_kalshi_matches(self) -> None:
+        """When the score API is out of daily calls, still show a Kalshi match that is trading."""
+        from app.services.tennis.provider import TennisLiveState
+
+        now = time.time()
+        linked: set[str] = set()
+        for ticker, meta in self._market_meta.items():
+            if not _kalshi_match_is_trading(meta, now):
+                continue
+            player_a, player_b, tournament = parse_players_from_market(meta)
+            linked.add(ticker)
+            created = ticker not in self.engine.snap.matches
+            if created:
+                self.engine.register_match(
+                    match_id=str(uuid4()),
+                    player_a=player_a,
+                    player_b=player_b,
+                    tournament=tournament or meta.get("event_ticker"),
+                    market_ticker=ticker,
+                    market_db_id=str(uuid4()),
+                    scheduled_start_ms=occurrence_start_ms(meta),
+                )
+            ctx = self.engine.snap.matches[ticker]
+            ctx.score_confirmed = True
+            ctx.tennis = TennisLiveState(
+                match_external_id=str(meta.get("event_ticker") or ticker),
+                player_a=player_a,
+                player_b=player_b,
+                tournament=tournament,
+                available=True,
+                source="kalshi",
+            )
+            if created:
+                prices = extract_market_prices(meta)
+                await self.engine.on_market_update(
+                    ticker,
+                    yes_bid=prices["yes_bid"],  # type: ignore[arg-type]
+                    yes_ask=prices["yes_ask"],  # type: ignore[arg-type]
+                    last_trade=prices["last_trade"],  # type: ignore[arg-type]
+                    volume=prices["volume"],  # type: ignore[arg-type]
+                    status=str(prices["status"]),
+                )
+        for ticker, ctx in self.engine.snap.matches.items():
+            if ticker not in linked:
+                ctx.score_confirmed = False
+                ctx.tennis = None
+        if linked and linked != self._linked_tickers and self.ws:
+            await self.ws.subscribe_markets(sorted(linked))
+        self._linked_tickers = linked
+        logger.info(
+            "Kalshi live link: %d markets checked, %d trading contracts",
             len(self._market_meta),
             len(linked),
         )

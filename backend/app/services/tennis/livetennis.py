@@ -11,7 +11,7 @@ import json
 import logging
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -23,10 +23,10 @@ from app.services.tennis.provider import TennisDataProvider, TennisLiveState
 
 logger = logging.getLogger(__name__)
 
-# The free key allows 100 reads a day. The signal loop wakes every few seconds;
-# the scoreboard itself must not be fetched that often or the key is exhausted
-# in minutes and then blocked.
-_MIN_POLL_SECONDS = 20.0
+# The free key allows 100 reads a day. A 20-second poll burns that quota in
+# about half an hour and then the live board goes empty. One read every
+# 15 minutes lasts the day.
+_MIN_POLL_SECONDS = 900.0
 _DEFAULT_BASE = "https://api.livetennisapi.com/api/public/v1"
 # A restart during a rate limit used to forget the match that was already live.
 _SLATE_FILE = Path("/tmp/courtedg-livetennis-slate.json")
@@ -169,11 +169,13 @@ class LiveTennisProvider(TennisDataProvider):
         self.settings = settings or get_settings()
         base = (self.settings.tennis_api_base_url or _DEFAULT_BASE).rstrip("/")
         self._base = base
+        key = self.settings.tennis_api_key or ""
         self._client = httpx.AsyncClient(
             timeout=15.0,
             headers={
                 "Accept": "application/json",
-                "X-API-Key": self.settings.tennis_api_key or "",
+                "X-API-Key": key,
+                "Authorization": f"Bearer {key}" if key else "",
                 "User-Agent": "CourtEdge/1.0",
             },
         )
@@ -327,15 +329,18 @@ class LiveTennisProvider(TennisDataProvider):
             body = response.json()
         except Exception:
             body = {}
+        now = datetime.now(timezone.utc)
         resets = body.get("resets_at") if isinstance(body, dict) else None
         if isinstance(resets, str):
             try:
                 when = datetime.fromisoformat(resets.replace("Z", "+00:00"))
-                hold = max(hold, (when - datetime.now(timezone.utc)).total_seconds())
+                hold = max(hold, (when - now).total_seconds())
             except ValueError:
                 pass
-        self._blocked_until = time.time() + max(hold, 30.0)
+        next_day = now.replace(hour=0, minute=1, second=0, microsecond=0) + timedelta(days=1)
+        hold = min(max(hold, 30.0), (next_day - now).total_seconds())
+        self._blocked_until = time.time() + hold
         logger.warning(
             "Live Tennis API rate limit. Holding the last slate for %.0fs",
-            max(hold, 30.0),
+            hold,
         )
