@@ -121,6 +121,104 @@ def test_two_occurrences_are_potential_and_three_are_recurring():
     assert again.occurrences == 3
 
 
+def test_three_successful_observations_are_bet_eligible():
+    """The same pattern becomes a bet after 3 successes in this match, not 4."""
+    engine = PatternEngine(settings())
+    for index in range(3):
+        seed_pullback(engine, "KX", 1_000 + index, 56, 53, 60, vol=1)
+    view = engine.assess(
+        ticker="KX",
+        points=developing_pullback(),
+        book=early_book(58),
+        confirmation_count=0,
+        baseline_volatility_override=1,
+        player_a="Osaka",
+        player_b="Swiatek",
+    )
+    assert view.successes >= 3
+    assert view.decision in ("PATTERN_ENTRY_SIGNAL", "STRONG_PATTERN_SIGNAL"), view.explanation
+    assert view.tradeable is True
+    assert view.player == "Osaka"
+    assert "Osaka" in view.explanation
+
+    two = PatternEngine(settings())
+    for index in range(2):
+        seed_pullback(two, "KX", 1_000 + index, 56, 53, 60, vol=1)
+    waiting = two.assess(
+        ticker="KX",
+        points=developing_pullback(),
+        book=early_book(58),
+        confirmation_count=0,
+        baseline_volatility_override=1,
+        player_a="Osaka",
+    )
+    assert waiting.successes < 3
+    assert waiting.decision not in ("PATTERN_ENTRY_SIGNAL", "STRONG_PATTERN_SIGNAL"), waiting.explanation
+
+
+def test_three_successes_stay_blocked_when_the_setup_is_invalid():
+    engine = PatternEngine(settings())
+    book = early_book(58)
+    shared = dict(
+        pattern_type="PULLBACK_RECOVERY",
+        label="OBSERVED ONLY",
+        stage="EARLY",
+        progress=20,
+        confidence=40,
+        entry_score=40,
+        confirmation_count=0,
+        confirming_signals=0,
+        evidence=[],
+        discovered=False,
+        observed_success_count=3,
+    )
+    eligible, tradeable, blockers, _reasons = engine._decide(book=book, **shared)
+    assert eligible == "PATTERN_ENTRY_SIGNAL"
+    assert tradeable is True
+    assert blockers == []
+
+    stale = BookSnapshot(
+        price=58, spread=1, imbalance=0.3, depth_bid=1400, depth_ask=700,
+        momentum=1, liquidity_quality="GOOD", spread_quality="EXCELLENT", fresh=False,
+    )
+    decision, tradeable, blockers, _reasons = engine._decide(book=stale, **shared)
+    assert decision not in ("PATTERN_ENTRY_SIGNAL", "STRONG_PATTERN_SIGNAL")
+    assert tradeable is False
+    assert any("stale" in item.lower() for item in blockers)
+
+    thin = BookSnapshot(
+        price=58, spread=1, imbalance=0.3, depth_bid=0, depth_ask=0,
+        momentum=1, liquidity_quality="VERY_LOW", spread_quality="EXCELLENT", fresh=True,
+    )
+    decision, tradeable, blockers, _reasons = engine._decide(book=thin, **shared)
+    assert decision not in ("PATTERN_ENTRY_SIGNAL", "STRONG_PATTERN_SIGNAL")
+    assert any("Liquidity" in item for item in blockers)
+
+    against = BookSnapshot(
+        price=58, spread=1, imbalance=-0.4, depth_bid=1400, depth_ask=700,
+        momentum=-1.2, liquidity_quality="GOOD", spread_quality="EXCELLENT", fresh=True,
+    )
+    decision, tradeable, blockers, _reasons = engine._decide(book=against, **shared)
+    assert decision not in ("PATTERN_ENTRY_SIGNAL", "STRONG_PATTERN_SIGNAL")
+    assert any("contradicts" in item.lower() for item in blockers)
+
+    late, tradeable, _blockers, _reasons = engine._decide(book=book, **{**shared, "stage": "LATE", "progress": 80})
+    assert late == "PATTERN_ALREADY_ADVANCED"
+    assert tradeable is False
+
+    broken, tradeable, _blockers, _reasons = engine._decide(
+        book=book, **{**shared, "pattern_type": "FAILED_BREAKOUT"}
+    )
+    assert broken == "FAILED_BREAKOUT"
+    assert tradeable is False
+
+    fourth_not_required, tradeable, _blockers, _reasons = engine._decide(
+        book=book, **{**shared, "observed_success_count": 3}
+    )
+    assert fourth_not_required == "PATTERN_ENTRY_SIGNAL"
+    assert tradeable is True
+
+
 def test_occurrence_time_is_the_match_start():
     assert occurrence_start_ms({}) is None
     assert occurrence_start_ms({"occurrence_datetime": ""}) is None
