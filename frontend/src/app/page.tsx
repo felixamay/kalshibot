@@ -8,6 +8,7 @@ import { StrategySettings } from "@/components/StrategySettings";
 import { MatchCard } from "@/components/MatchCard";
 import { PrimarySignalCard } from "@/components/PrimarySignalCard";
 import { useLiveFeed } from "@/hooks/useLiveFeed";
+import { considerYesAlert, enableSignalAudio, playSignalAudio, signalAlertKey } from "@/lib/signalAudio";
 import type { LiveSignal } from "@/lib/types";
 
 const BET_STATES = new Set([
@@ -50,8 +51,8 @@ function useRotatingBet(signals: LiveSignal[]): LiveSignal | null {
 }
 
 export default function HomePage() {
-  const { dashboard, signals, feedDown, serverNow, apiUrl } = useLiveFeed();
-  const [alertsEnabled, setAlertsEnabled] = useState(true);
+  const [alertsEnabled, setAlertsEnabled] = useState(false);
+  const { dashboard, signals, feedDown, serverNow, apiUrl } = useLiveFeed(alertsEnabled);
   // Start empty. A useState initializer runs on the server and is not re-run
   // on hydration, so a saved token would be ignored in every new tab.
   const [token, setToken] = useState<string | null>(null);
@@ -66,7 +67,7 @@ export default function HomePage() {
 
   const rankedMatches = useMemo(() => {
     const matches = (dashboard?.matches ?? []).filter(
-      (m) => m.is_live !== false
+      (m) => m.is_live !== false && (m.live_evidence_expires_at_ms == null || m.live_evidence_expires_at_ms > serverNow)
     );
     const group: Record<string, number> = {
       STRONG_PATTERN_SIGNAL: 0,
@@ -101,7 +102,7 @@ export default function HomePage() {
       (group[m.display_state] ?? 6) * 1000 -
       (m.pattern?.entry_score ?? m.entry?.entry_score ?? m.read?.opportunity_score ?? 0);
     return [...matches].sort((a, b) => rank(a) - rank(b));
-  }, [dashboard]);
+  }, [dashboard, serverNow]);
 
   const betMatches = rankedMatches.filter((m) => needsBet(m.display_state));
 
@@ -111,9 +112,10 @@ export default function HomePage() {
     null;
 
   const betSignals = useMemo(() => {
+    const verifiedTickers = new Set(rankedMatches.map(m => m.market_ticker));
     const fromFeed = signals.filter((s) => {
       const rem = s.expires_at_ms - serverNow;
-      return s.actionable && s.status === "ACTIVE" && rem > 0 && isBetSignal(s);
+      return !feedDown && verifiedTickers.has(s.market_ticker) && s.actionable && s.status === "ACTIVE" && rem > 0 && isBetSignal(s);
     });
     const fromMatches = betMatches
       .map((m) => m.active_signal)
@@ -132,9 +134,25 @@ export default function HomePage() {
     return [...byMarket.values()].sort((a, b) =>
       (a.market_ticker || a.signal_id).localeCompare(b.market_ticker || b.signal_id)
     );
-  }, [signals, serverNow, betMatches]);
+  }, [signals, serverNow, betMatches, rankedMatches, feedDown]);
 
   const shownBet = useRotatingBet(betSignals);
+
+  useEffect(() => {
+    if (!alertsEnabled || feedDown) return;
+    for (const signal of betSignals) {
+      playSignalAudio(signalAlertKey(signal));
+      if (signal.expires_at_ms - serverNow < 2000) playSignalAudio(signalAlertKey(signal), true);
+    }
+    const now = serverNow || Date.now();
+    for (const match of dashboard?.matches ?? []) {
+      const hybrid = match.hybrid_decision?.signal;
+      if (!hybrid?.alert_key) continue;
+      if (considerYesAlert(hybrid.alert_key, hybrid.final === "YES", now)) {
+        playSignalAudio(`yes:${hybrid.alert_key}:${Math.floor(now)}`);
+      }
+    }
+  }, [alertsEnabled, feedDown, betSignals, serverNow, dashboard]);
 
   useEffect(() => {
     const read = () => localStorage.getItem("kt_token");
@@ -220,10 +238,13 @@ export default function HomePage() {
           <div className="flex flex-wrap justify-end gap-2">
             <button
               type="button"
-              onClick={() => setAlertsEnabled((v) => !v)}
+              onClick={async () => {
+                if (alertsEnabled) setAlertsEnabled(false);
+                else setAlertsEnabled(await enableSignalAudio());
+              }}
               className="border border-white/15 px-3 py-2 font-mono text-[11px] uppercase tracking-wider"
             >
-              Alerts {alertsEnabled ? "On" : "Off"}
+              {alertsEnabled ? "Sound On" : "Enable Sound"}
             </button>
             {authReady && token ? (
               <button
@@ -308,7 +329,7 @@ export default function HomePage() {
       {dashboard && !featured && betSignals.length === 0 && betMatches.length === 0 && (
         <section className="mt-6 border border-white/10 bg-ink-800/40 p-8 md:p-12">
           <p className="font-display text-4xl md:text-5xl text-mist/90">
-            {dashboard.no_live_markets ? "NO LIVE TENNIS MARKETS ON KALSHI" : "Waiting for quotes."}
+            {dashboard.message || (dashboard.no_live_markets ? "NO LIVE TENNIS MARKETS ON KALSHI" : "Waiting for fresh live confirmation.")}
           </p>
         </section>
       )}

@@ -488,3 +488,15 @@ class TennisMarketDivergenceRecord(ReasoningRecordMixin, Base):
 
 class ReasoningHistoryRecord(ReasoningRecordMixin, Base):
     __tablename__ = "reasoning_history"
+
+
+class TennisPointRecord(ReasoningRecordMixin, Base):
+    __tablename__ = 'tennis_points'
+
+
+class TennisPointStateRecord(ReasoningRecordMixin, Base):
+    __tablename__ = 'tennis_point_states'
+
+
+class GPTPatternRecord(ReasoningRecordMixin, Base):
+    __tablename__ = 'gpt_pattern_analyses'

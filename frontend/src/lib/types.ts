@@ -120,8 +120,31 @@ export interface BlockReasoning {
   tennis_momentum?: number | null; market_momentum?: number | null; divergence?: number | null; data_quality?: string;
 }
 export interface MatchCard {
+  points?: {
+    available: boolean; note: string; last_seq: number; source_match_id?: string | null;
+    history: TennisPoint[];
+    analysis: { last_two: TennisPoint[]; pattern: string; leader: string | null; ready: boolean;
+                has_gap: boolean; revised: boolean; tracked_points: number; summary: string };
+  };
   match_status?: string;
   service_games_analyzed?: number;
+  ai_pattern_analysis?: {
+    status: string; message?: string; model?: string;
+    output?: { pattern_name: string; favored_side: string; pattern_confidence: number;
+      pattern_stage: string; recommendation: string; reasons: string[]; risks: string[] };
+  };
+  hybrid_decision?: {
+    quantitative_engine: string; final_decision: string; score: number; blockers: string[];
+    signal?: {
+      final: "YES" | "WATCH" | "WAIT" | "NO" | "DO NOT CHASE" | string;
+      player_name?: string; pattern?: string; confidence?: number | null; current_cents?: number;
+      alert_key?: string; message?: string | null; play_sound?: boolean;
+      gpt_visual?: { pattern?: string; favors?: string; confidence?: number | null; stage?: string | null };
+      kalshi_live?: { bias?: string; bid_pressure_pct?: number; liquidity?: string };
+      gpt_snapshot_time?: number | null; gpt_response_time?: number | null;
+      kalshi_current_time?: number | null; kalshi_price_at_snapshot?: number | null; kalshi_current_price?: number | null;
+    };
+  };
   serve_block_progress?: number;
   service_game_data_available?: boolean;
   service_game_data_note?: string;
@@ -151,6 +174,7 @@ export interface MatchCard {
   analysis_mode: string;
   display_state: string;
   is_live?: boolean;
+  live_evidence_expires_at_ms?: number | null;
   observation_ends_ms?: number;
   observation_remaining_ms: number;
   observation_remaining_display: string;
@@ -173,6 +197,12 @@ export interface MatchCard {
     pattern_health?: number | null;
     status?: string;
   } | null;
+}
+
+export interface TennisPoint {
+  seq: number; set: number | null; game: number | null; number: number | null;
+  winner: string | null; next_server: string | null; score: string | null; tiebreak: boolean;
+  ts?: string | null; serve?: number | null; outcome?: string | null;
 }
 
 export interface DashboardPayload {

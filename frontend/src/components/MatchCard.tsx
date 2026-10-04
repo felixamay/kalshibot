@@ -2,6 +2,7 @@
 
 import { formatMatchTimer, remainingFromTimestamps } from "@/lib/clock";
 import type { MatchCard as MatchCardType } from "@/lib/types";
+import { TennisPointPanel } from './TennisPointPanel';
 
 export function MatchCard({
   match,
@@ -117,14 +118,55 @@ export function MatchCard({
         )}
       </div>
 
+      <TennisPointPanel match={match} />
+      <section className="mt-4 border border-white/10 p-3 text-sm" aria-label="AI pattern analysis">
+        <p className="font-semibold">AI PATTERN ANALYSIS</p>
+        <p>AI MODEL: {match.ai_pattern_analysis?.model === "gpt-6-luna" ? "GPT-6 Luna" : match.ai_pattern_analysis?.model === "gpt-6.1-sol" ? "GPT-6.1 Sol" : match.ai_pattern_analysis?.model ?? "Pending"}</p>
+        <p>{match.ai_pattern_analysis?.message ?? match.ai_pattern_analysis?.status ?? "Waiting for two completed service games"}</p>
+        {match.ai_pattern_analysis?.output && <>
+          <p>Detected Pattern: {match.ai_pattern_analysis.output.pattern_name.replaceAll("_", " ")}</p>
+          <p>Favored: {match.ai_pattern_analysis.output.favored_side === "PLAYER_A" ? match.player_a : match.ai_pattern_analysis.output.favored_side === "PLAYER_B" ? match.player_b : "Neither"}</p>
+          <p>Pattern Confidence: {match.ai_pattern_analysis.output.pattern_confidence} · Stage: {match.ai_pattern_analysis.output.pattern_stage}</p>
+          <p>AI View: {match.ai_pattern_analysis.output.recommendation.replaceAll("_", " ")} ({match.ai_pattern_analysis.status})</p>
+          <p>{match.ai_pattern_analysis.output.reasons.join(" · ")}</p>
+          <p className="text-mist/60">{match.ai_pattern_analysis.output.risks.join(" · ")}</p>
+        </>}
+        {match.hybrid_decision?.signal?.final === "YES" && (
+          <div className="mt-3 border border-signal-lime/50 p-3">
+            <p className="font-display text-3xl text-signal-lime">YES — {match.hybrid_decision.signal.player_name}</p>
+            <p>Pattern: {match.hybrid_decision.signal.pattern}</p>
+            <p>Confidence: {match.hybrid_decision.signal.confidence}</p>
+            <p>Current: {match.hybrid_decision.signal.current_cents}¢</p>
+          </div>
+        )}
+        {match.hybrid_decision?.signal && (
+          <div className="mt-3">
+            <p>GPT VISUAL ANALYSIS:</p>
+            {match.hybrid_decision.signal.message === "GPT ANALYSIS STALE" ? <p>GPT ANALYSIS STALE</p> : <>
+              <p>{match.hybrid_decision.signal.gpt_visual?.pattern || "—"}</p>
+              <p>Favors {match.hybrid_decision.signal.gpt_visual?.favors || "—"}</p>
+              <p>Confidence {match.hybrid_decision.signal.gpt_visual?.confidence ?? "—"}</p>
+            </>}
+            <p>KALSHI LIVE ANALYSIS:</p>
+            <p>{match.hybrid_decision.signal.kalshi_live?.bias || "—"}</p>
+            <p>Bid Pressure {match.hybrid_decision.signal.kalshi_live?.bid_pressure_pct ?? "—"}%</p>
+            <p>Liquidity {match.hybrid_decision.signal.kalshi_live?.liquidity || "—"}</p>
+            <p>FINAL: {match.hybrid_decision.signal.final}{match.hybrid_decision.signal.final === "YES" ? ` — ${match.hybrid_decision.signal.player_name}` : ""}</p>
+          </div>
+        )}
+        <p>Quantitative Engine: {(match.hybrid_decision?.quantitative_engine ?? match.pattern?.decision ?? "WAIT").replaceAll("_", " ")}</p>
+        <p>Final Decision: {(match.hybrid_decision?.final_decision ?? match.latest_reasoning?.decision ?? "WAIT").replaceAll("_", " ")}</p>
+        <p>{match.hybrid_decision?.blockers?.join(" · ")}</p>
+        <p className="text-mist/60">Confidence is a ranking score, not a winning probability. You decide manually.</p>
+      </section>
       <div className="mt-4 border border-white/10 p-3 text-sm">
+        <p className="mb-2 text-mist/70">After two completed service games, we check the pattern. A confirmed entry shows who to bet on with a 20-second countdown.</p>
         <p>Current Server: {match.tennis?.server === "A" ? match.player_a : match.tennis?.server === "B" ? match.player_b : "Unavailable"}</p>
         <p>Service Games Analyzed: {match.service_games_analyzed ?? 0}</p>
-        <p>{match.service_game_data_available ? `SERVE BLOCK: ${match.serve_block_progress ?? 0} / 2 GAMES COMPLETE` : "SERVICE-GAME DATA UNAVAILABLE"}</p>
+        <p>{match.service_game_data_available ? "WAITING FOR TWO COMPLETED SERVICE GAMES" : "SERVICE-GAME DATA UNAVAILABLE"}</p>
         <p className="text-mist/60">{match.service_game_data_note}</p>
-        {match.observation_remaining_ms > 0 && <p>STUDYING FIRST 5 MINUTES · {formatMatchTimer(Math.max(0, (match.observation_ends_ms || serverNow) - serverNow))}</p>}
         {match.latest_reasoning && <div className="mt-3">
-          <p>LATEST TWO-SERVICE-GAME REASONING</p>
+          <p>LATEST SERVEBLOCK REASONING</p>
           <p>{match.latest_reasoning.summary}</p>
           {(["A", "B"] as const).map(side => {
             const player = match.latest_reasoning?.players?.[side];

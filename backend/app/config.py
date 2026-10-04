@@ -3,7 +3,7 @@
 from functools import lru_cache
 from typing import Optional
 
-from pydantic import AliasChoices, Field
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -14,6 +14,25 @@ class Settings(BaseSettings):
         extra="ignore",
         populate_by_name=True,
     )
+
+    # Backend-only pattern analyst; empty key keeps deterministic operation.
+    openai_api_key: str = Field(default="", repr=False)
+    openai_pattern_model: str = Field(default="gpt-6-luna", validation_alias=AliasChoices("OPENAI_PATTERN_MODEL", "DEFAULT_PATTERN_MODEL", "openai_pattern_model"))
+    openai_deep_model: str = Field(default="gpt-6.1-sol", validation_alias=AliasChoices("OPENAI_DEEP_MODEL", "DEEP_ANALYSIS_MODEL", "openai_deep_model"))
+    openai_request_timeout_seconds: float = Field(default=8, gt=0, le=30)
+    openai_max_advice_age_seconds: float = Field(default=60, gt=0)
+    openai_stale_price_move: float = Field(default=0.025, gt=0, le=1)
+    openai_disagreement_score: float = Field(default=20, gt=0)
+    openai_divergence_threshold: float = Field(default=40, gt=0)
+    hybrid_weights: list[float] = Field(default=[0.50, 0.30, 0.20], min_length=3, max_length=3)
+
+    @field_validator("hybrid_weights")
+    @classmethod
+    def validate_hybrid_weights(cls, value):
+        import math
+        if any(not math.isfinite(v) or v < 0 for v in value) or sum(value) <= 0:
+            raise ValueError("Hybrid weights must be finite, nonnegative and sum above zero")
+        return value
 
     # Application
     app_name: str = "Kalshi Tennis Signal Analyst"
@@ -48,9 +67,9 @@ class Settings(BaseSettings):
 
     # Observation & signal strategy
     # Confidence is signal confidence, not the player's win probability.
-    # Initial baseline study precedes two-completed-service-game reasoning.
+    # Legacy field retained for configuration compatibility; study runs after each game win.
     initial_observation_seconds: int = Field(
-        default=300,
+        default=0,
         validation_alias=AliasChoices(
             "INITIAL_OBSERVATION_SECONDS",
             "INITIAL_STUDY_SECONDS",

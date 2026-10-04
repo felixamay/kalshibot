@@ -144,14 +144,18 @@ class MatchContext:
     phase_events: list[dict[str, Any]] = field(default_factory=list)
     # 0 means the caller did not schedule a start (tests). None means unknown, so not live.
     scheduled_start_ms: Optional[float] = 0.0
-    # None uses the schedule. True/False comes from the live score feed.
+    # Live evidence comes from the score feed or an explicit Kalshi live flag.
     score_confirmed: Optional[bool] = None
+    live_evidence_expires_at_ms: Optional[float] = None
     # Verified completed service games observed since this match was linked.
     serves_seen: int = 0
     last_pattern_serve: int = 0
     serve_fingerprint: Optional[tuple[Any, ...]] = None
     points_were_visible: bool = False
     tracker: Any = None
+    point_tracker: Any = None
+    pending_point_records: list = field(default_factory=list)
+    point_state_saved: Optional[str] = None
     reasoning_history: list = field(default_factory=list)
     pending_blocks: list = field(default_factory=list)
     latest_reasoning: Any = None
@@ -162,17 +166,18 @@ class MatchContext:
     match_status: str = "LIVE"
     event_id: Optional[str] = None
     market_ids: list = field(default_factory=list)
-
-
-# A tennis match can run long. Outside this window the contract is not a live game.
-_LIVE_MATCH_WINDOW_MS = 6 * 60 * 60 * 1000
+    ai_analysis: dict = field(default_factory=lambda: {"status": "WAITING", "message": "Waiting for two completed service games"})
+    ai_history: list = field(default_factory=list)
+    ai_request_id: str | None = None
+    ai_task: Any = None
+    hybrid_decision: dict = field(default_factory=dict)
 
 
 def match_is_live(ctx: MatchContext, now_ms: float) -> bool:
     # The score feed is the authority when it has spoken. Kalshi's listed
     # start can be a day off, or still open long after the match ended.
     if ctx.score_confirmed is True:
-        return True
+        return ctx.live_evidence_expires_at_ms is None or now_ms < ctx.live_evidence_expires_at_ms
     if ctx.score_confirmed is False:
         return False
     start = ctx.scheduled_start_ms
@@ -180,7 +185,7 @@ def match_is_live(ctx: MatchContext, now_ms: float) -> bool:
         return False
     if start <= 0:
         return True
-    return start <= now_ms <= start + _LIVE_MATCH_WINDOW_MS
+    return False
 
 
 @dataclass
@@ -213,6 +218,10 @@ class SignalEngine:
         self.prob_model = TennisProbabilityModel(self.settings)
         self.pattern_engine = PatternEngine(self.settings)
         self.reasoner = TennisPatternReasoner(self.settings)
+        from app.services.signals.ai_patterns import GPTPatternAnalyst, HybridPatternDecisionEngine
+        self.ai_analyst = GPTPatternAnalyst(self.settings)
+        self.hybrid_engine = HybridPatternDecisionEngine(self.settings)
+        self.ai_tasks = set()
         self.discovery_health = {}
         self.snap = EngineSnapshot()
         self._lock = asyncio.Lock()
@@ -253,12 +262,14 @@ class SignalEngine:
             market_ticker=market_ticker,
             market_db_id=market_db_id,
             observation_started_ms=now,
-            observation_ends_ms=now + self.settings.initial_observation_seconds * 1000,
+            observation_ends_ms=now,
             analysis_mode=AnalysisMode.OBSERVING.value,
             display_state=SignalType.STUDYING_MATCH,
             scheduled_start_ms=scheduled_start_ms,
         )
         ctx.tracker = ServiceGameTracker(match_id)
+        from app.services.tennis.points import TennisPointTracker
+        ctx.point_tracker = TennisPointTracker(match_id)
         self.snap.matches[market_ticker] = ctx
         if market_ticker not in self.snap.analyzers:
             self.snap.analyzers[market_ticker] = RollingMarketAnalyzer(
@@ -312,13 +323,14 @@ class SignalEngine:
             view = self._assess_pattern(ctx, market, now)
             ctx.last_pattern = view
             earlier = ctx.tracker.blocks[:ctx.tracker.blocks.index(block)]
-            if now < ctx.observation_ends_ms:
+            if not ctx.baseline_service_strength:
                 from app.services.signals.tennis_reasoner import service_score
-                initial_games = [g for b in ctx.tracker.blocks for g in b.games if b.end_time <= ctx.observation_ends_ms]
+                initial_games = ctx.tracker.blocks[0].games
                 ctx.baseline_service_strength = {side: service_score(initial_games, side) for side in ("A", "B")}
             reasoning = self.reasoner.analyze(block, earlier, ctx.baseline, market, view, ctx.position, ctx.baseline_service_strength)
-            if now < ctx.observation_ends_ms:
-                reasoning.update(reliable=False, decision="WAIT", reason="STUDYING FIRST 5 MINUTES")
+            winner = block.games[-1]['winner']
+            winner_name = ctx.player_a if winner == 'A' else ctx.player_b
+            reasoning['summary'] = f"{winner_name} won the game. {reasoning['summary']}"
             reasoning.update(pattern_type=view.pattern_type, maximum_entry_price=view.maximum_entry_price,
                              entry_zone_low=view.entry_zone_low, entry_zone_high=view.entry_zone_high)
             block.return_pressure = {side: values["return_pressure"] for side, values in reasoning["players"].items()}
@@ -327,6 +339,105 @@ class SignalEngine:
             ctx.reasoning_history.append(reasoning)
             ctx.last_pattern_serve = ctx.serves_seen
             await self._persist_block(ctx, block, reasoning)
+            self.schedule_ai_analysis(ctx, block, market)
+
+    def schedule_ai_analysis(self, ctx, block, market, deep=False):
+        from app.services.signals.ai_patterns import build_snapshot
+        if block.invalidated or len(block.games) != 2 or market.data_age_ms > self.settings.max_data_age_ms:
+            return False
+        if not self.settings.openai_api_key:
+            ctx.ai_analysis = {"status": "UNAVAILABLE", "message": "AI ANALYSIS TEMPORARILY UNAVAILABLE"}
+            return False
+        if deep and ctx.ai_task and not ctx.ai_task.done():
+            return False
+        if ctx.ai_task and not ctx.ai_task.done():
+            ctx.ai_task.cancel()
+        try:
+            snapshot = build_snapshot(ctx, block, market, self.snap.analyzers[ctx.market_ticker], self.settings)
+        except Exception:
+            logger.exception("Could not build AI feature snapshot")
+            ctx.ai_analysis = {"status": "UNAVAILABLE", "message": "AI ANALYSIS TEMPORARILY UNAVAILABLE"}
+            return False
+        snapshot['deep_requested'] = deep
+        ctx.ai_request_id = snapshot['analysis_request_id']
+        ctx.ai_analysis = {"status": "PENDING", "message": "Analyzing completed ServeBlock"}
+        task = asyncio.create_task(self._run_ai(ctx, block, snapshot, deep))
+        ctx.ai_task = task
+        self.ai_tasks.add(task)
+        task.add_done_callback(self.ai_tasks.discard)
+        return True
+
+    def _ai_is_fresh(self, ctx, snapshot):
+        market = self.snap.analyzers[ctx.market_ticker].state
+        return (ctx.ai_request_id == snapshot['analysis_request_id']
+            and ctx.latest_reasoning and ctx.latest_reasoning['block_id'] == snapshot['serve_block_id']
+            and not any(b.invalidated and b.block_id == snapshot['serve_block_id'] for b in ctx.tracker.blocks)
+            and time.time()*1000-snapshot['requested_at_ms'] <= self.settings.openai_max_advice_age_seconds*1000
+            and market.data_age_ms <= self.settings.max_data_age_ms
+            and market.status.upper() == 'OPEN'
+            and abs(market.mid/100-snapshot['market_price_at_request']) < self.settings.openai_stale_price_move)
+
+    async def _persist_ai(self, ctx, row):
+        import json
+        from app.database import AsyncSessionLocal
+        from app.models import GPTPatternRecord
+        try:
+            async with (self.session_factory or AsyncSessionLocal)() as session:
+                await session.merge(GPTPatternRecord(id=row['id'], match_id=ctx.match_id, payload=json.dumps(row, allow_nan=False)))
+                await session.commit()
+        except Exception:
+            logger.exception("Could not persist AI pattern evaluation")
+
+    async def _run_ai(self, ctx, block, snapshot, deep):
+        from app.services.signals.ai_patterns import needs_second_opinion
+        models = [self.settings.openai_deep_model if deep else self.settings.openai_pattern_model]
+        try:
+            for model in models:
+                output = await self.ai_analyst.analyze(snapshot, model)
+                # No lock is held during HTTP requests or persistence.
+                async with self._lock:
+                    fresh = self._ai_is_fresh(ctx, snapshot)
+                    favored_yes = output.favored_side == snapshot['match']['yes_side']
+                    quote = self.snap.analyzers[ctx.market_ticker].state.mid/100
+                    responded = time.time()*1000
+                    row = {'id': str(uuid4()), 'model': model, 'timestamp': responded,
+                           'input_features': snapshot.copy(), 'output': output.model_dump(),
+                           'status': 'VALID' if fresh else 'STALE',
+                           'message': None if fresh else 'GPT ANALYSIS STALE',
+                           'gpt_snapshot_time': snapshot.get('requested_at_ms'),
+                           'gpt_response_time': responded,
+                           'kalshi_price_at_snapshot': snapshot.get('market_price_at_request'),
+                           'price_at_analysis': quote if favored_yes else 1-quote,
+                           'horizon_prices': {}, 'maximum_favorable_movement': 0.0,
+                           'maximum_adverse_movement': 0.0, 'pattern_success': None, 'pattern_failure': None}
+                    ctx.ai_history.append(row)
+                    if ctx.ai_request_id == snapshot['analysis_request_id']:
+                        ctx.ai_analysis = row
+                    if fresh:
+                        view = self._assess_pattern(ctx, self.snap.analyzers[ctx.market_ticker].state, time.time()*1000)
+                        ctx.hybrid_decision = self.hybrid_engine.decide(
+                            view, row, self.snap.analyzers[ctx.market_ticker].state, snapshot['match']['yes_side'],
+                            match_id=ctx.match_id, player_a=ctx.player_a, player_b=ctx.player_b,
+                        )
+                await self._persist_ai(ctx, row)
+                if not fresh:
+                    return
+                if not deep and model == self.settings.openai_pattern_model and needs_second_opinion(output, snapshot, self.settings):
+                    models.append(self.settings.openai_deep_model)
+                    snapshot = dict(snapshot, first_opinion=output.model_dump())
+                    ctx.ai_analysis = {"status": "PENDING", "message": "Resolving disagreement with second opinion"}
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # Never log response bodies or API credentials.
+            if ctx.ai_request_id == snapshot['analysis_request_id']:
+                ctx.ai_analysis = {"status": "UNAVAILABLE", "message": "AI ANALYSIS TEMPORARILY UNAVAILABLE"}
+
+    async def close(self):
+        tasks = list(self.ai_tasks)
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _persist_games(self, ctx):
         from app.database import AsyncSessionLocal
@@ -343,9 +454,40 @@ class SignalEngine:
         except Exception:
             logger.exception("Could not persist completed service games")
 
+    async def _persist_points(self, ctx):
+        from app.database import AsyncSessionLocal
+        from app.models import TennisPointRecord, TennisPointStateRecord
+        from sqlalchemy import select
+        from hashlib import sha256
+        import json
+        if not ctx.point_tracker.events:
+            return
+        state = ctx.point_tracker.to_dict()
+        # Avoid writes on quote refreshes; history and point state change on tennis updates.
+        durable = {k: v for k, v in state.items() if k != 'updated_at_ms'}
+        encoded = json.dumps(durable, sort_keys=True)
+        if encoded == ctx.point_state_saved:
+            return
+        try:
+            async with (self.session_factory or AsyncSessionLocal)() as session:
+                records = {}
+                for event in ctx.pending_point_records:
+                    identity = f"{ctx.match_id}:{event['source_match_id']}:{event['basis']}:{event['seq']}"
+                    point_id = sha256(identity.encode()).hexdigest()
+                    records[point_id] = TennisPointRecord(id=point_id, match_id=ctx.match_id, payload=json.dumps(event))
+                if records:
+                    existing = set((await session.execute(select(TennisPointRecord.id).where(TennisPointRecord.id.in_(records)))).scalars())
+                    session.add_all(row for point_id, row in records.items() if point_id not in existing)
+                await session.merge(TennisPointStateRecord(id=ctx.match_id, match_id=ctx.match_id, payload=encoded))
+                await session.commit()
+            ctx.pending_point_records.clear()
+            ctx.point_state_saved = encoded
+        except Exception:
+            logger.exception('Could not persist tennis point history')
+
     async def restore_match_history(self, ctx):
         from app.database import AsyncSessionLocal
-        from app.models import ServiceGameRecord, ServeBlockRecord, ReasoningHistoryRecord
+        from app.models import ServiceGameRecord, ServeBlockRecord, ReasoningHistoryRecord, TennisPointRecord, TennisPointStateRecord
         from app.services.tennis.service_games import ServeBlock, ServiceGame
         from sqlalchemy import select
         import json
@@ -357,6 +499,22 @@ class SignalEngine:
                 ctx.tracker.games = sorted([ServiceGame(**json.loads(row.payload)) for row in rows], key=lambda g: g.end_time)
                 rows = (await session.execute(select(ReasoningHistoryRecord).where(ReasoningHistoryRecord.match_id == ctx.match_id))).scalars()
                 ctx.reasoning_history = sorted([json.loads(row.payload) for row in rows], key=lambda r: r["end_time"])
+                from app.models import GPTPatternRecord
+                ai_rows = (await session.execute(select(GPTPatternRecord).where(GPTPatternRecord.match_id == ctx.match_id))).scalars()
+                ctx.ai_history = sorted([json.loads(row.payload) for row in ai_rows], key=lambda r: r['timestamp'])
+                used_games = {g['game_id'] for b in ctx.tracker.blocks for g in b.games}
+                ctx.tracker.pending = [g for g in ctx.tracker.games if g.game_id not in used_games][-1:]
+                point_state = await session.get(TennisPointStateRecord, ctx.match_id)
+                if point_state:
+                    saved = json.loads(point_state.payload)
+                    ctx.point_tracker.source_match_id = saved.get('source_match_id')
+                    ctx.point_tracker.basis = saved.get('basis', 'live')
+                    point_rows = (await session.execute(select(TennisPointRecord).where(TennisPointRecord.match_id == ctx.match_id))).scalars()
+                    ctx.point_tracker.events = {p['seq']: p for row in point_rows if (p := json.loads(row.payload)).get('source_match_id') == ctx.point_tracker.source_match_id and p.get('basis') == ctx.point_tracker.basis}
+                    ctx.point_tracker.analyses = saved.get('analysis_history', [])
+                    ctx.point_tracker.quality = saved.get('quality', 'unknown')
+                    ctx.point_tracker.note = 'Restored point history; waiting for a fresh tennis update'
+                    ctx.point_tracker.analysis = ctx.point_tracker.analyze()
             ctx.tracker.seen = {g.game_id for g in ctx.tracker.games}
             ctx.persisted_game_ids = ctx.tracker.seen.copy()
             ctx.serves_seen = len(ctx.tracker.games)
@@ -388,6 +546,10 @@ class SignalEngine:
             ctx = self.snap.matches.get(ticker)
             analyzer = self.snap.analyzers.get(ticker)
             if ctx and analyzer:
+                point_state = ctx.tennis if match_is_live(ctx, time.time() * 1000) else None
+                ctx.pending_point_records.extend(dict(point, source_match_id=ctx.point_tracker.source_match_id, basis=ctx.point_tracker.basis)
+                                                for point in ctx.point_tracker.update(point_state, time.time() * 1000))
+                await self._persist_points(ctx)
                 if status is not None:
                     analyzer.state.status = status
                 self.note_serves(ctx)
@@ -396,7 +558,10 @@ class SignalEngine:
                 if ctx.position:
                     await self._evaluate_position(ctx, analyzer.state, time.time() * 1000, emergency_forced=analyzer.state.data_age_ms > self.settings.max_data_age_ms)
                 elif ctx.latest_reasoning:
-                    ctx.hold_reason = ctx.latest_reasoning["reason"]
+                    if not ctx.latest_reasoning['reliable']:
+                        self._show_pattern_study(ctx, analyzer.state, time.time() * 1000)
+                    else:
+                        ctx.hold_reason = ctx.latest_reasoning['reason']
 
     async def on_market_update(
         self,
@@ -436,6 +601,15 @@ class SignalEngine:
         if not ctx:
             return
 
+        from app.services.signals.ai_patterns import update_outcomes
+        if market.data_age_ms <= self.settings.max_data_age_ms and market.status.upper() == 'OPEN':
+            changed = update_outcomes(ctx.ai_history, market.mid/100, market.last_update_ms, self.settings.max_data_age_ms)
+            for row in changed:
+                task = asyncio.create_task(self._persist_ai(ctx, row.copy()))
+                self.ai_tasks.add(task)
+                task.add_done_callback(self.ai_tasks.discard)
+        if ctx.ai_analysis.get('status') == 'VALID' and not self._ai_is_fresh(ctx, ctx.ai_analysis['input_features']):
+            ctx.ai_analysis = dict(ctx.ai_analysis, status='STALE', message='GPT ANALYSIS STALE')
         self.note_serves(ctx)
         block_completed = bool(ctx.pending_blocks)
         await self._reason_blocks(ctx, market, now)
@@ -491,14 +665,6 @@ class SignalEngine:
         if ctx.position is not None:
             await self._evaluate_position(ctx, market, now, emergency_forced=False)
             return
-        if now < ctx.observation_ends_ms:
-            ctx.display_state = SignalType.STUDYING_MATCH
-            ctx.hold_reason = "STUDYING FIRST 5 MINUTES"
-            return
-
-        if ctx.position is not None:
-            await self._evaluate_position(ctx, market, now, emergency_forced=False)
-            return
 
         if market.data_age_ms > self.settings.max_data_age_ms:
             ctx.display_state = SignalType.DATA_DELAY
@@ -530,17 +696,35 @@ class SignalEngine:
             )
             return
 
+        if not ctx.tracker.available:
+            ctx.display_state = SignalType.SEARCHING_FOR_ENTRY
+            ctx.hold_reason = "SERVICE-GAME DATA UNAVAILABLE — WAIT"
+            return
         if ctx.tracker.available:
             reasoning = ctx.latest_reasoning
             if not reasoning or not reasoning["reliable"]:
-                ctx.display_state = SignalType.SEARCHING_FOR_ENTRY
-                ctx.hold_reason = reasoning["reason"] if reasoning else f"SERVE BLOCK: {len(ctx.tracker.pending)} / 2 GAMES COMPLETE — WAIT"
+                self._show_pattern_study(ctx, market, now)
                 return
         if block_completed:
             ctx.display_state = SignalType.ENTRY_DEVELOPING if ctx.latest_reasoning and ctx.latest_reasoning["reliable"] else SignalType.SEARCHING_FOR_ENTRY
             ctx.hold_reason = ctx.latest_reasoning["reason"] if ctx.latest_reasoning else "WAIT"
             return
         await self._evaluate_entry(ctx, market, now)
+
+    def _show_pattern_study(self, ctx: MatchContext, market: MarketState, now: float) -> None:
+        """Expose developing evidence without authorizing a betting entry."""
+        reasoning = ctx.latest_reasoning
+        ctx.display_state = SignalType.SEARCHING_FOR_ENTRY
+        ctx.hold_reason = reasoning['reason'] if reasoning else 'WAITING FOR A COMPLETED GAME — WAIT'
+        if not reasoning:
+            return
+        view = self._assess_pattern(ctx, market, now)
+        ctx.last_pattern = view
+        if view.pattern_type:
+            ctx.display_state = _PATTERN_STATES.get(view.decision, SignalType.PATTERN_DEVELOPING)
+            if view.decision in _PATTERN_ENTRIES:
+                ctx.display_state = SignalType.PATTERN_DEVELOPING
+            ctx.hold_reason = f"{view.pattern_name}: {view.explanation} Game-win check: {reasoning['reason']}"
 
     def _score_market(self, ctx: MatchContext, market: MarketState) -> ProbabilityResult:
         player = market_yes_player(ctx, market)
@@ -613,7 +797,8 @@ class SignalEngine:
         if ctx.baseline is not None:
             return ctx.baseline
         analyzer = self.snap.analyzers.get(ticker)
-        ticks = [t for t in analyzer.ticks_since(ctx.observation_started_ms) if t.ts_ms <= ctx.observation_ends_ms] if analyzer else []
+        cutoff = ctx.tracker.blocks[0].end_time if ctx.tracker.blocks else time.time() * 1000
+        ticks = [t for t in analyzer.ticks_since(ctx.observation_started_ms) if t.ts_ms <= cutoff] if analyzer else []
         ctx.baseline = build_baseline(ticks, self.settings)
         return ctx.baseline
 
@@ -741,6 +926,11 @@ class SignalEngine:
         ):
             ctx.best_seen_ask = ask
 
+        ctx.hybrid_decision = self.hybrid_engine.decide(
+            view, ctx.ai_analysis, market,
+            'PLAYER_A' if market_yes_player(ctx, market) == ctx.player_a else 'PLAYER_B',
+            match_id=ctx.match_id, player_a=ctx.player_a, player_b=ctx.player_b,
+        )
         active = self._active_signal_for(ticker)
         if active and active.is_actionable(now):
             book_text = " ".join(view.blockers)
@@ -756,6 +946,7 @@ class SignalEngine:
                 and not view.orderbook_only
                 and bool(view.pattern_type)
                 and not book_broke
+                and not ctx.hybrid_decision.get("blockers")
             )
             if not still_valid:
                 if ask > active.maximum_entry_price:
@@ -1158,6 +1349,11 @@ class SignalEngine:
             ctx.confirmation_count = 0
             return
 
+        if not match_is_live(ctx, now):
+            sig.cancel(ExpirationReason.MARKET_SUSPENDED, price=sig.market_price, message="Live match evidence expired. Do not enter.", server_now_ms=now)
+            await self._emit_signal_update(sig)
+            return
+
         # Stale
         if market.data_age_ms > self.settings.max_data_age_ms:
             sig.cancel(ExpirationReason.STALE_DATA, price=market.executable_yes_price(), server_now_ms=now)
@@ -1354,10 +1550,10 @@ class SignalEngine:
                 direction,
                 pattern.pattern_type,
             )
-            ttl_ms = ttl.ttl_ms
+            ttl_ms = 20_000
         else:
             bet_instruction, market_instruction = "", ""
-            ttl_ms = ttl.ttl_ms
+            ttl_ms = 20_000
 
         sig = LiveSignal(
             signal_id=signal_id,
@@ -1400,8 +1596,8 @@ class SignalEngine:
                     "market_price": ask,
                     "confidence": confidence,
                     "net_edge": prob.estimated_net_edge,
-                    "ttl_ms": ttl.ttl_ms,
-                    "ttl_reason": ttl.reason,
+                    "ttl_ms": ttl_ms,
+                    "ttl_reason": "20-second manual entry window; cancels when the setup breaks",
                 }
             ],
         )
@@ -1459,6 +1655,8 @@ class SignalEngine:
             reason = None
             if now >= sig.expires_at_ms:
                 reason = ExpirationReason.TTL_EXPIRED
+            elif self.snap.matches.get(sig.market_ticker) and not match_is_live(self.snap.matches[sig.market_ticker], now):
+                reason = ExpirationReason.MARKET_SUSPENDED
             elif market is None or market.data_age_ms > self.settings.max_data_age_ms:
                 reason = ExpirationReason.STALE_DATA
             if reason:
@@ -1486,12 +1684,16 @@ class SignalEngine:
                     "event_id": ctx.event_id,
                     "market_ids": ctx.market_ids,
                     "match_status": ctx.match_status,
+                    "live_evidence_expires_at_ms": ctx.live_evidence_expires_at_ms,
                     "service_games_analyzed": len(ctx.tracker.games),
+                    "ai_pattern_analysis": {k: v for k, v in ctx.ai_analysis.items() if k in ('status', 'message', 'model', 'timestamp', 'output')},
+                    "hybrid_decision": ctx.hybrid_decision,
                     "serve_block_progress": len(ctx.tracker.pending),
                     "service_game_data_available": ctx.tracker.available,
                     "service_game_data_note": ctx.tracker.note,
                     "latest_reasoning": ctx.latest_reasoning,
                     "reasoning_history": ctx.reasoning_history,
+                    "points": ctx.point_tracker.to_dict(),
 
                     "player_a": ctx.player_a,
                     "player_b": ctx.player_b,
@@ -1555,8 +1757,8 @@ class SignalEngine:
             "matches": cards,
             "actionable_signals": actionable,
             "signal_history": self.snap.signal_history[-50:],
-            "no_live_markets": len(cards) == 0 and self.discovery_health.get("complete", False),
-            "message": ("NO LIVE TENNIS MARKETS ON KALSHI" if self.discovery_health.get("complete", False) else "TENNIS DISCOVERY UNAVAILABLE — RECONCILIATION PENDING") if len(cards) == 0 else None,
+            "no_live_markets": len(cards) == 0 and self.discovery_health.get("complete", False) and self.discovery_health.get("live_verification_available", True),
+            "message": ("LIVE MATCH VERIFICATION UNAVAILABLE" if self.discovery_health.get("live_verification_available") is False else "NO LIVE TENNIS MARKETS ON KALSHI" if self.discovery_health.get("complete", False) else "TENNIS DISCOVERY UNAVAILABLE — RECONCILIATION PENDING") if len(cards) == 0 else None,
             "max_data_age_ms": self.settings.max_data_age_ms,
         }
 
