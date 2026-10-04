@@ -177,6 +177,11 @@ class MarketOrchestrator:
         await self.tennis.close()
 
     async def _on_ws_status(self, status: ConnectionStatus) -> None:
+        # REST still serves quotes while the Kalshi socket retries.
+        # A reconnect loop is not an exchange outage and must not turn the
+        # badge off on every browser refresh.
+        if status != ConnectionStatus.CONNECTED:
+            return
         self.engine.set_connection_status(status)
         if self.engine.broadcast:
             await self.engine.broadcast(
@@ -273,10 +278,9 @@ class MarketOrchestrator:
             self._market_meta[ticker] = m
 
         await self._link_scoreboard()
-        # If WS never got messages, still mark connected when REST works
-        if markets and self.engine.snap.connection_status == ConnectionStatus.DISCONNECTED:
-            # REST path is alive — use RECONNECTING until WS connects, but allow analysis via poll
-            pass
+        # REST reached Kalshi. Keep the public badge on even if the socket is retrying.
+        if self.engine.snap.connection_status != ConnectionStatus.CONNECTED:
+            self.engine.set_connection_status(ConnectionStatus.CONNECTED)
         if not markets:
             logger.info("NO LIVE TENNIS MARKETS")
 
@@ -287,9 +291,9 @@ class MarketOrchestrator:
             try:
                 await self._bulk_refresh_quotes()
                 book_cursor = await self._refresh_orderbooks(book_cursor)
-                if self.engine.snap.matches and self.engine.snap.connection_status != ConnectionStatus.CONNECTED:
+                if self.engine.snap.connection_status != ConnectionStatus.CONNECTED:
                     # REST is delivering live quotes even if the authenticated WS is down
-                    self.engine.snap.connection_status = ConnectionStatus.CONNECTED
+                    self.engine.set_connection_status(ConnectionStatus.CONNECTED)
             except Exception as exc:
                 logger.error("Poll loop error: %s", exc)
             try:

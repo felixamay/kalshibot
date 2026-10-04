@@ -38,14 +38,14 @@ function forgetBoard() {
 export function useLiveFeed() {
   const [dashboard, setDashboard] = useState<DashboardPayload | null>(null);
   const [signals, setSignals] = useState<Record<string, LiveSignal>>({});
-  // A refresh paints this static page before the live check. RECONNECTING here
-  // turned the Kalshi light off on every reload.
+  // A refresh paints this static page before the live check. Keep both lights
+  // on. A missed fetch is not a Kalshi outage.
   const [connection, setConnection] = useState<
     "CONNECTED" | "RECONNECTING" | "DISCONNECTED"
   >("CONNECTED");
   const [wsState, setWsState] = useState<
     "CONNECTED" | "RECONNECTING" | "DISCONNECTED"
-  >("RECONNECTING");
+  >("CONNECTED");
   const clockRef = useRef(new ClockSynchronizer());
   const wsRef = useRef<WebSocket | null>(null);
   const [feedDown, setFeedDown] = useState(false);
@@ -71,7 +71,6 @@ export function useLiveFeed() {
     setDashboard(null);
     setSignals({});
     setFeedDown(true);
-    setConnection("RECONNECTING");
     forgetBoard();
   }, []);
 
@@ -144,7 +143,6 @@ export function useLiveFeed() {
 
     const connect = () => {
       if (stopped) return;
-      setWsState("RECONNECTING");
       const ws = new WebSocket(WS_URL);
       wsRef.current = ws;
 
@@ -222,7 +220,7 @@ export function useLiveFeed() {
         if (!stopped && health.connection_status) setConnection(health.connection_status);
       })
       .catch(() => {
-        if (!stopped && lastGoodAt.current === 0) setConnection("RECONNECTING");
+        /* A missed health check is not a Kalshi outage. Keep the last status. */
       });
 
     loadJson("/api/dashboard")
@@ -245,7 +243,7 @@ export function useLiveFeed() {
     const cached = readCachedBoard();
     if (!cached) return;
     setDashboard(cached);
-    if (cached.connection_status) setConnection(cached.connection_status);
+    if (cached.connection_status === "CONNECTED") setConnection(cached.connection_status);
   }, []);
 
   // High-frequency server-now tick for countdowns (100ms).
