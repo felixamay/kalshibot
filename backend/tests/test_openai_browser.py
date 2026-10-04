@@ -165,6 +165,30 @@ async def test_creates_session_approves_kalshi_and_reuses_it(tmp_path, caplog):
 
 
 @pytest.mark.asyncio
+async def test_observe_reuses_the_open_kalshi_browser(tmp_path):
+    transport = FakeTransport()
+    transport.events = [
+        {"type": "agent.session.turn.output_text.done", "text": "5-7 4-5 30-15\nServer: Nico Hipfl"},
+        {"type": "agent.session.turn.completed", "turn": {"subagent_id": None}},
+    ]
+    hosted = browser(tmp_path, transport)
+    hosted.session_id = "sess_test"
+    hosted.state = "CONNECTED"
+    hosted.environment_alive = True
+    hosted.kalshi_loaded = True
+    text = await hosted.observe("Open https://kalshi.com/markets/kxatpmatch/e and read the score. Do not click Buy.")
+    assert text is not None and "5-7" in text
+    creates = [call for call in transport.calls if call[0] == "POST" and call[1] == "/v1/agents/sessions"]
+    assert creates == []
+    messages = [
+        call for call in transport.calls
+        if call[2] and call[2].get("events", [{}])[0].get("type") == "agent.session.input.message"
+    ]
+    assert messages
+    assert "Buy" in messages[0][2]["events"][0]["input"][0]["content"][0]["text"]
+
+
+@pytest.mark.asyncio
 async def test_disconnect_recovers_the_same_session(tmp_path):
     transport = FakeTransport()
     hosted = browser(tmp_path, transport)

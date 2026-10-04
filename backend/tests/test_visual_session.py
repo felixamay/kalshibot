@@ -90,6 +90,47 @@ def test_kalshi_page_score_is_logged_and_a_blank_page_does_not_use_espn(caplog):
     assert kept.tennis.source == "livetennis"
 
 
+@pytest.mark.asyncio
+async def test_watch_reads_only_the_chatgpt_kalshi_view():
+    session = KalshiVisualSession(Settings(_env_file=None, openai_api_key="test"))
+    session.hosted.public_status = lambda: {"connected": True, "error": None}
+    seen = {}
+
+    async def observe(instruction):
+        seen["instruction"] = instruction
+        return "Nico Hipfl vs Ryan Nijboer\nLIVE\n5-7 4-5 30-15\nServer: Nico Hipfl"
+
+    session.hosted.observe = observe
+    ctx = SimpleNamespace(
+        match_id="m",
+        player_a="Nico Hipfl",
+        player_b="Ryan Nijboer",
+        event_id="KXATPCHALLENGERMATCH-26OCT04NIJHIP",
+        market_ticker="KXATPCHALLENGERMATCH-26OCT04NIJHIP-HIP",
+        tennis=None,
+    )
+
+    async def on_tennis_update(_ticker):
+        seen["updated"] = True
+
+    session.engine = SimpleNamespace(on_tennis_update=on_tennis_update)
+    await session.watch([ctx])
+    assert "kalshi.com/markets/kxatpchallengermatch/" in seen["instruction"]
+    assert "Buy" in seen["instruction"]
+    assert ctx.tennis.source == "kalshi_visual"
+    assert ctx.tennis.available is True
+    assert "5-7" in ctx.tennis.set_score
+    assert seen["updated"] is True
+    session.hosted.observe = lambda _instruction: _async_none()
+    await session.watch([ctx])
+    assert ctx.tennis.available is True
+    assert "5-7" in ctx.tennis.set_score
+
+
+async def _async_none():
+    return None
+
+
 def test_visible_score_parses_the_displayed_set():
     text = "Maria Sakkari vs Elina Svitolina\n6-4 2-3\nServer: Maria Sakkari\nYes 62¢"
     state = parse_visible_score(text, "Maria Sakkari", "Elina Svitolina")

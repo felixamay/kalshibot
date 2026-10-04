@@ -281,8 +281,35 @@ class OpenAIHostedBrowser:
             self.error = "OpenAI browser environment did not become ready"
             raise RuntimeError(self.error)
 
+    async def observe(self, instruction: str) -> str | None:
+        """One read-only turn on the Kalshi page already open in this browser."""
+        if not getattr(self.settings, "openai_api_key", ""):
+            self.error = "OPENAI_API_KEY is not configured"
+            return None
+        if not self.public_status()["connected"]:
+            await self.start()
+        if not self.public_status()["connected"]:
+            return None
+        async with self._lock:
+            try:
+                text = await self._run_turn(instruction)
+            except Exception as exc:
+                logger.warning("OpenAI browser observation: %s", type(exc).__name__)
+                return None
+        if self.session_id and self.environment_alive and self.kalshi_loaded:
+            self.state = "CONNECTED"
+            self.error = None
+        return text or None
+
     async def _verify(self) -> None:
         self.state = "CONNECTING"
+        await self._run_turn(VERIFICATION_TASK)
+        if not (self.session_id and self.environment_alive and self.kalshi_loaded):
+            self.state = "ERROR"
+            self.error = self.error or "Kalshi page did not load in the OpenAI browser"
+            raise RuntimeError(self.error)
+
+    async def _run_turn(self, instruction: str) -> str:
         opened = asyncio.Event()
         queue: asyncio.Queue = asyncio.Queue()
 
@@ -299,7 +326,7 @@ class OpenAIHostedBrowser:
         task = asyncio.create_task(reader())
         try:
             await asyncio.wait_for(opened.wait(), timeout=30)
-            await self._post_events([user_message(VERIFICATION_TASK)])
+            await self._post_events([user_message(instruction)])
             finished = False
             while not finished:
                 event = await asyncio.wait_for(queue.get(), timeout=210)
@@ -313,10 +340,7 @@ class OpenAIHostedBrowser:
             raise
         finally:
             task.cancel()
-        if not (self.session_id and self.environment_alive and self.kalshi_loaded):
-            self.state = "ERROR"
-            self.error = self.error or "Kalshi page did not load in the OpenAI browser"
-            raise RuntimeError(self.error)
+        return self.last_successful_observation or ""
 
     async def _handle_event(self, event: dict) -> bool:
         kind = str(event.get("type") or "")

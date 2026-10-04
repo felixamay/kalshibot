@@ -66,8 +66,8 @@ export function useLiveFeed() {
   }, []);
 
   const noteFailure = useCallback(() => {
-    const age = Date.now() - lastGoodAt.current;
-    if (lastGoodAt.current !== 0 && age <= BOARD_KEEP_MS) return;
+    // A missed fetch must not wipe a board that Kalshi and the ChatGPT view already painted.
+    if (lastGoodAt.current !== 0) return;
     setDashboard(null);
     setSignals({});
     setFeedDown(true);

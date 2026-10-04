@@ -129,6 +129,7 @@ class MarketOrchestrator:
             asyncio.create_task(self._poll_loop(), name="poll"),
             asyncio.create_task(self._expiry_loop(), name="expiry"),
             asyncio.create_task(self._tennis_loop(), name="tennis"),
+            asyncio.create_task(self._visual_loop(), name="gpt-visual"),
             asyncio.create_task(self.visual.start(), name="kalshi-visual"),
         ]
         logger.info("MarketOrchestrator started")
@@ -451,8 +452,6 @@ class MarketOrchestrator:
         while not self._stop.is_set():
             try:
                 await self._link_scoreboard()
-                if self._visual_enabled:
-                    await self._observe_visual()
             except Exception as exc:
                 logger.warning("Tennis loop: %s", exc)
             try:
@@ -662,6 +661,19 @@ class MarketOrchestrator:
         health["kalshi_live_matches_found"] = live_matches
         health["ws_markets_subscribed"] = len(getattr(self.ws, "_subscribed_tickers", ()) or ())
         health.update(self.visual.diagnostics())
+
+    async def _visual_loop(self) -> None:
+        """ChatGPT's Kalshi view updates scores. It does not block the Kalshi quote loop."""
+        while not self._stop.is_set():
+            try:
+                if self._visual_enabled:
+                    await self._observe_visual()
+            except Exception as exc:
+                logger.warning("Visual loop: %s", type(exc).__name__)
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=5)
+            except asyncio.TimeoutError:
+                pass
 
     async def _observe_visual(self) -> None:
         try:

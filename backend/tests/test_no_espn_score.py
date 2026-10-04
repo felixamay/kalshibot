@@ -3,7 +3,6 @@
 import pytest
 
 from app.config import Settings
-from app.services.tennis.livetennis import LiveTennisProvider
 from app.services.tennis.provider import NullTennisProvider, create_tennis_provider
 
 
@@ -31,7 +30,8 @@ async def test_factory_never_returns_espn():
         )
     )
     try:
-        assert isinstance(live, LiveTennisProvider)
-        assert type(live).__name__ != "FallbackTennisProvider"
+        assert isinstance(live, NullTennisProvider)
+        assert type(live).__name__ != "LiveTennisProvider"
+        assert await live.list_live_matches() == []
     finally:
         await live.close()
