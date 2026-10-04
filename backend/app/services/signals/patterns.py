@@ -1642,11 +1642,10 @@ class PatternEngine:
             blockers.append("Spread is not acceptable")
         if book.liquidity_quality in ("LOW", "VERY_LOW") or book.depth_bid + book.depth_ask <= 0:
             blockers.append("Liquidity is insufficient or unavailable")
-        # Three successful repeats, or an observed success rate over 70%, are enough.
-        # A fourth success is not required. Exactly 70% does not suggest a bet.
-        if observed_success_count >= 3 or (
-            observed_success_rate is not None and observed_success_rate > 0.70
-        ):
+        # Three successful repeats, or observed success of at least 70%, are enough.
+        # A fourth success is not required.
+        rate_suggests_bet = observed_success_rate is not None and observed_success_rate >= 0.70
+        if observed_success_count >= 3 or rate_suggests_bet:
             eligible_blockers = list(blockers)
             if book.momentum < 0 and book.imbalance < 0:
                 eligible_blockers.append("Current confirmation contradicts the pattern")
@@ -1659,8 +1658,8 @@ class PatternEngine:
                 )
             if entry_score >= settings.strong_pattern_entry_score and confidence >= settings.strong_pattern_confidence:
                 return "STRONG_PATTERN_SIGNAL", True, [], ["Repeated pattern and market confirmation agree"]
-            if observed_success_rate is not None and observed_success_rate > 0.70:
-                return "PATTERN_ENTRY_SIGNAL", True, [], ["Observed success is over 70%"]
+            if rate_suggests_bet:
+                return "PATTERN_ENTRY_SIGNAL", True, [], ["Observed success is 70% or higher"]
             return "PATTERN_ENTRY_SIGNAL", True, [], ["Same pattern succeeded 3 times in this match"]
         if confidence < settings.min_pattern_confidence:
             blockers.append("Low pattern confidence")

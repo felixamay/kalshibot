@@ -171,7 +171,7 @@ def test_three_successful_observations_are_bet_eligible():
         player_a="Osaka",
     )
     assert waiting.successes < 3
-    assert waiting.success_rate is not None and waiting.success_rate <= 0.70
+    assert waiting.success_rate is not None and waiting.success_rate < 0.70
     assert waiting.decision not in ("PATTERN_ENTRY_SIGNAL", "STRONG_PATTERN_SIGNAL"), waiting.explanation
 
 
@@ -238,17 +238,17 @@ def test_three_successes_stay_blocked_when_the_setup_is_invalid():
     assert tradeable is True
 
     suggested, tradeable, blockers, reasons = engine._decide(
-        book=book, **{**shared, "observed_success_count": 1, "observed_success_rate": 0.71}
+        book=book, **{**shared, "observed_success_count": 1, "observed_success_rate": 0.70}
     )
     assert suggested == "PATTERN_ENTRY_SIGNAL"
     assert tradeable is True
     assert blockers == []
-    assert "over 70%" in reasons[0]
+    assert "70%" in reasons[0]
 
-    even, tradeable, _blockers, _reasons = engine._decide(
-        book=book, **{**shared, "observed_success_count": 1, "observed_success_rate": 0.70}
+    below, tradeable, _blockers, _reasons = engine._decide(
+        book=book, **{**shared, "observed_success_count": 1, "observed_success_rate": 0.69}
     )
-    assert even not in ("PATTERN_ENTRY_SIGNAL", "STRONG_PATTERN_SIGNAL")
+    assert below not in ("PATTERN_ENTRY_SIGNAL", "STRONG_PATTERN_SIGNAL")
     assert tradeable is False
 
     stale_rate, tradeable, blockers, _reasons = engine._decide(
