@@ -1,3 +1,6 @@
+import { describe, test } from "node:test";
+import assert from "node:assert/strict";
+const expect = (actual: unknown) => ({ toBe: (value: unknown) => assert.equal(actual, value), toBeLessThan: (value: number) => assert.ok(Number(actual) < value) });
 /**
  * @jest-environment jsdom
  *
@@ -13,7 +16,7 @@ import {
   remainingFromTimestamps,
   urgencyFromRemaining,
   ClockSynchronizer,
-} from "../lib/clock";
+} from "./clock.ts";
 
 describe("countdown timestamps", () => {
   test("starts with correct remaining", () => {

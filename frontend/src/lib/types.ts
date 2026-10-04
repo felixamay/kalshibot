@@ -112,7 +112,21 @@ export interface MarketRead {
   close_to_signal?: boolean;
 }
 
+export interface BlockReasoning {
+  block_id: string; decision: string; reason: string; patterns: string[];
+  pattern_confidence: number; entry_score: number; confirmation_count: number;
+  summary: string; pattern_health?: number | null;
+  players?: Record<string, { service_strength: number | null; return_pressure: number | null; momentum: string }>;
+  tennis_momentum?: number | null; market_momentum?: number | null; divergence?: number | null; data_quality?: string;
+}
 export interface MatchCard {
+  match_status?: string;
+  service_games_analyzed?: number;
+  serve_block_progress?: number;
+  service_game_data_available?: boolean;
+  service_game_data_note?: string;
+  latest_reasoning?: BlockReasoning | null;
+  reasoning_history?: BlockReasoning[];
   match_id: string;
   player_a: string;
   player_b: string;
@@ -162,6 +176,7 @@ export interface MatchCard {
 }
 
 export interface DashboardPayload {
+  discovery_health?: { events_checked?: number; markets_checked?: number; tennis_markets_found?: number; live_matches_found?: number; last_refresh_ms?: number; complete?: boolean; errors?: string[] };
   server_time_ms: number;
   connection_status: ConnectionStatus;
   live_match_count: number;

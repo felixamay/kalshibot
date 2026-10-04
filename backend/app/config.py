@@ -48,13 +48,9 @@ class Settings(BaseSettings):
 
     # Observation & signal strategy
     # Confidence is signal confidence, not the player's win probability.
-    # The 5-minute clock is abolished. This value is not a wait before a bet.
-    # A pattern is studied after every two serves, then one pattern is picked
-    # to bet. Confirmations are not required. The game still has to be live
-    # and not in the last five serves when the winner is clear. A price above
-    # 85% does not cancel that bet or send the card back to studying.
+    # Initial baseline study precedes two-completed-service-game reasoning.
     initial_observation_seconds: int = Field(
-        default=0,
+        default=300,
         validation_alias=AliasChoices(
             "INITIAL_OBSERVATION_SECONDS",
             "INITIAL_STUDY_SECONDS",
@@ -139,6 +135,8 @@ class Settings(BaseSettings):
     weight_entry_reversal: float = 0.05
 
     # Pattern engine. A detected pattern is not automatically a bet.
+    serve_entry_weights: list[float] = [0.25, 0.20, 0.15, 0.15, 0.10, 0.05, 0.05, 0.03, 0.02]
+    serve_block_weights: list[float] = [0.40, 0.25, 0.20, 0.15]
     pattern_engine_enabled: bool = True
     min_pattern_occurrences: int = 2
     pattern_watch_score: float = 65.0

@@ -177,7 +177,7 @@ class KalshiReadOnlyClient:
         limit: int = 200,
         cursor: Optional[str] = None,
     ) -> dict[str, Any]:
-        params: dict[str, Any] = {"limit": limit, "status": status}
+        params: dict[str, Any] = {"limit": limit, "status": status, "mve_filter": "exclude"}
         if series_ticker:
             params["series_ticker"] = series_ticker
         if event_ticker:
@@ -227,130 +227,49 @@ class KalshiReadOnlyClient:
         return await self.request("GET", "/series", authenticated=False)
 
     async def search_tennis_markets(self) -> list[dict[str, Any]]:
-        """Discover open tennis-related markets via series keywords and title heuristics."""
-        keywords = [k.strip().lower() for k in self.settings.tennis_series_keywords.split(",") if k.strip()]
-        found: list[dict[str, Any]] = []
-        seen: set[str] = set()
-
-        # Match-winner contracts, including challenger, ITF, and doubles.
-        # Tour scoreboards hide the matches that are actually on court.
-        preferred_series = (
-            "KXWTAMATCH",
-            "KXATPMATCH",
-            "KXWTACHALLENGERMATCH",
-            "KXATPCHALLENGERMATCH",
-            "KXITFMATCH",
-            "KXITFWMATCH",
-            "KXITFDOUBLES",
-            "KXITFWDOUBLES",
-            "KXATPDOUBLES",
-            "KXWTADOUBLES",
-            "KXATPCHALLENGERDOUBLES",
-            "KXMIXEDDOUBLESMATCH",
-            "KXTENNISMATCH",
-        )
-
+        """Exhaustive paginated reconciliation; no series/page/result caps."""
+        from app.services.kalshi.tennis_detector import TennisMarketDetector
+        detector = TennisMarketDetector()
+        health = {"events_checked": 0, "markets_checked": 0, "tennis_markets_found": 0,
+                  "last_refresh_ms": time.time() * 1000, "complete": False, "errors": []}
+        self.discovery_health = health
+        series = {}
         try:
-            series_resp = await self.get_series_list()
-            series_list = series_resp.get("series", series_resp.get("series_list", []))
-            tennis_series: list[str] = []
-            for s in series_list:
-                ticker = (s.get("ticker") or s.get("series_ticker") or "").upper()
-                title = (s.get("title") or s.get("frequency") or "").lower()
-                cat = (s.get("category") or "").lower()
-                blob = f"{ticker} {title} {cat}"
-                if any(k in blob.lower() for k in keywords) or "tennis" in blob:
-                    tennis_series.append(s.get("ticker") or s.get("series_ticker"))
-
-            # Preferred first, then others (cap to avoid rate limits)
-            ordered: list[str] = []
-            for p in preferred_series:
-                if p not in ordered:
-                    ordered.append(p)
-            for st in tennis_series:
-                if st and st not in ordered:
-                    ordered.append(st)
-
-            for st in ordered[:24]:
-                if not st:
-                    continue
-                try:
-                    await asyncio.sleep(0.15)
-                    data = await self.get_markets(status="open", series_ticker=st, limit=200)
-                    for m in data.get("markets", []):
-                        t = m.get("ticker")
-                        if t and t not in seen:
-                            seen.add(t)
-                            found.append(m)
-                except Exception as exc:
-                    logger.debug("series %s markets failed: %s", st, exc)
+            data = await self.get_series_list()
+            series = {s.get("ticker"): s for s in data.get("series", [])}
         except Exception as exc:
-            logger.warning("Series list fetch failed: %s — falling back to market scan", exc)
-
-        # Broader open market scan with tennis heuristics if still thin
-        if len(found) < 5:
-            cursor = None
-            pages = 0
-            while pages < 4:
-                try:
-                    await asyncio.sleep(0.2)
-                    data = await self.get_markets(status="open", limit=200, cursor=cursor)
-                except Exception as exc:
-                    logger.error("Market scan failed: %s", exc)
-                    break
-                markets = data.get("markets", [])
-                if not markets:
-                    break
-                for m in markets:
-                    blob = " ".join(
-                        str(m.get(k) or "")
-                        for k in ("ticker", "title", "subtitle", "yes_sub_title", "no_sub_title", "event_ticker")
-                    ).lower()
-                    if any(
-                        k in blob
-                        for k in (
-                            "tennis",
-                            "atp",
-                            "wta",
-                            "open match",
-                            "set winner",
-                            "match winner",
-                        )
-                    ) or any(k in blob for k in keywords):
-                        t = m.get("ticker")
-                        if t and t not in seen:
-                            seen.add(t)
-                            found.append(m)
-                cursor = data.get("cursor")
-                pages += 1
-                if not cursor:
-                    break
-
-        # Match-winner contracts only. Futures and round markets are not a live game.
-        match_prefixes = (
-            "KXWTAMATCH",
-            "KXATPMATCH",
-            "KXWTACHALLENGERMATCH",
-            "KXATPCHALLENGERMATCH",
-            "KXITFMATCH",
-            "KXITFWMATCH",
-            "KXITFDOUBLES",
-            "KXITFWDOUBLES",
-            "KXATPDOUBLES",
-            "KXWTADOUBLES",
-            "KXATPCHALLENGERDOUBLES",
-            "KXMIXEDDOUBLESMATCH",
-        )
-        match_only = [
-            m
-            for m in found
-            if (m.get("ticker") or "").upper().startswith(match_prefixes)
-        ]
-        if match_only:
-            found = match_only
-
-        logger.info("Discovered %d tennis-related Kalshi markets", len(found))
-        return found[:400]
+            health["errors"].append(f"Series: {type(exc).__name__}")
+        events = {}
+        cursor = None
+        while True:
+            data = await self.get_events(status="open", limit=200, cursor=cursor)
+            for event in data.get("events", []):
+                events[event.get("event_ticker")] = event
+            cursor = data.get("cursor")
+            if not cursor:
+                break
+            await asyncio.sleep(0.15)
+        health["events_checked"] = len(events)
+        found = {}
+        cursor = None
+        while True:
+            data = await self.get_markets(status="open", limit=1000, cursor=cursor)
+            for market in data.get("markets", []):
+                health["markets_checked"] += 1
+                event = events.get(market.get("event_ticker"), {})
+                info = series.get(event.get("series_ticker") or market.get("series_ticker"), {})
+                if detector.detects(market, event, info):
+                    found[market["ticker"]] = {**market, "_event": event, "_series": info}
+            cursor = data.get("cursor")
+            if not cursor:
+                break
+            await asyncio.sleep(0.15)
+        for event in events.values():
+            for market in event.get("markets", []):
+                if detector.detects(market, event, series.get(event.get("series_ticker"), {})):
+                    found[market["ticker"]] = {**market, "_event": event}
+        health.update(tennis_markets_found=len(found), complete=True, last_refresh_ms=time.time() * 1000)
+        return list(found.values())
 
 
 # Explicit guard: ensure module never defines write helpers

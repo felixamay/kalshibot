@@ -33,6 +33,7 @@ from app.services.tennis.probability import ProbabilityResult
 
 def settings() -> Settings:
     return Settings(
+        _env_file=None,
         initial_observation_seconds=0,
         database_url="sqlite+aiosqlite:///:memory:",
         pattern_engine_enabled=True,
@@ -194,8 +195,8 @@ async def test_a_match_that_has_not_started_is_not_a_bet():
     assert payload["no_live_markets"] is False
 
 
-def test_a_pattern_about_to_begin_alerts_without_three_confirmations():
-    """An early pattern is the bet. Three confirmations are not required."""
+def test_low_confidence_early_pattern_waits_for_confirmation():
+    """Low confidence blocks entry even when a pullback is developing."""
     engine = PatternEngine(settings())
     seed_pullback(engine, "KX", 1_000, 52, 49, 55, vol=1)
     once = engine.assess(
@@ -208,11 +209,11 @@ def test_a_pattern_about_to_begin_alerts_without_three_confirmations():
     )
     assert once.pattern_type == "PULLBACK_RECOVERY"
     assert once.stage in ("EARLY", "DEVELOPING")
-    assert once.decision == "PATTERN_ENTRY_SIGNAL", once.explanation
-    assert once.tradeable is True
-    assert once.confirmation_needed == 0
+    assert once.decision in ("PATTERN_WATCH", "PATTERN_DEVELOPING"), once.explanation
+    assert once.tradeable is False
+    assert once.confirmation_needed == 3
     assert once.reasons
-    assert "this is the pattern to bet" in once.explanation.lower()
+    assert "wait" in once.explanation.lower()
     assert "confirmation" not in once.explanation.lower()
 
     fresh = PatternEngine(settings())
@@ -225,14 +226,14 @@ def test_a_pattern_about_to_begin_alerts_without_three_confirmations():
         player_a="Player A",
     )
     assert forming.pattern_type == "PULLBACK_RECOVERY"
-    assert forming.decision == "PATTERN_ENTRY_SIGNAL", forming.explanation
-    assert forming.tradeable is True
+    assert forming.decision not in ("PATTERN_ENTRY_SIGNAL", "STRONG_PATTERN_SIGNAL"), forming.explanation
+    assert forming.tradeable is False
     assert forming.reasons
     assert "confirmation" not in forming.explanation.lower()
 
 
-def test_zero_printed_depth_still_alerts_an_early_pattern():
-    """A live quote with no printed size is still a bet. Cerundolo was blocked only by depth 0."""
+def test_zero_printed_depth_blocks_entry():
+    """Unknown depth cannot confirm an executable entry."""
     engine = PatternEngine(settings())
     seed_pullback(engine, "KXATPMATCH-26OCT02CERMEN-CER", 1_000, 52, 49, 55, vol=1)
     book = BookSnapshot(
@@ -259,10 +260,10 @@ def test_zero_printed_depth_still_alerts_an_early_pattern():
         player_b="Jakub Mensik",
     )
     assert view.stage in ("EARLY", "DEVELOPING")
-    assert view.decision in ("PATTERN_ENTRY_SIGNAL", "STRONG_PATTERN_SIGNAL"), view.explanation
-    assert view.tradeable is True
-    assert not any("Liquidity" in blocker for blocker in view.blockers)
-    assert "Bet YES on Francisco Cerundolo now" in view.explanation
+    assert view.decision not in ("PATTERN_ENTRY_SIGNAL", "STRONG_PATTERN_SIGNAL"), view.explanation
+    assert view.tradeable is False
+    assert any("Liquidity" in blocker for blocker in view.blockers)
+    assert "Bet YES" not in view.explanation
 
     wide = BookSnapshot(
         price=58,
@@ -534,12 +535,12 @@ async def test_engine_emits_pattern_entry_after_repeated_pullbacks():
     assert emitted[0].pattern_name == "Pullback + Recovery"
     assert emitted[0].maximum_entry_price >= emitted[0].market_price
     assert emitted[0].expires_at_ms > emitted[0].created_at_ms
-    assert emitted[0].expires_at_ms - emitted[0].created_at_ms >= 20_000
-    assert emitted[0].maximum_entry_price >= emitted[0].market_price + 8
+    assert s.min_signal_ttl_seconds * 1000 <= emitted[0].original_ttl_ms <= s.max_signal_ttl_seconds * 1000
+    assert emitted[0].maximum_entry_price <= emitted[0].market_price + s.max_entry_slippage_cents
 
 
 @pytest.mark.asyncio
-async def test_pattern_bet_stays_for_its_countdown_when_the_next_read_relabels_it():
+async def test_pattern_failure_cancels_before_countdown():
     s = settings()
     engine = SignalEngine(s)
     engine.snap.connection_status = ConnectionStatus.CONNECTED
@@ -597,13 +598,12 @@ async def test_pattern_bet_stays_for_its_countdown_when_the_next_read_relabels_i
         imbalance=0.2,
         status="OPEN",
     )
-    assert sig.status == SignalStatus.ACTIVE
-    assert sig.is_actionable()
-    assert ctx.display_state == SignalType.PATTERN_ENTRY_SIGNAL
+    assert sig.status != SignalStatus.ACTIVE
+    assert not sig.is_actionable()
 
 
 @pytest.mark.asyncio
-async def test_study_clock_does_not_delay_a_pattern_that_is_about_to_begin():
+async def test_study_clock_blocks_entry_for_five_minutes():
     s = settings()
     s.initial_observation_seconds = 300
     engine = SignalEngine(s)
@@ -644,14 +644,6 @@ async def test_study_clock_does_not_delay_a_pattern_that_is_about_to_begin():
         )
     payload = engine.dashboard_payload()
     card = payload["matches"][0]
-    assert card["observation_remaining_ms"] == pytest.approx(0, abs=50)
-    assert card["display_state"] in ("PATTERN_ENTRY_SIGNAL", "STRONG_PATTERN_SIGNAL")
-    assert payload["actionable_signals"], card["hold_reason"]
-    assert payload["actionable_signals"][0]["player"] == "Player A"
-    instruction = payload["actionable_signals"][0].get("bet_instruction") or ""
-    assert "Bet YES" in instruction
-    assert "now" in instruction
-    assert "market" in (payload["actionable_signals"][0].get("market_instruction") or "").lower()
-    assert "Pullback" in (payload["actionable_signals"][0].get("pattern_name") or "")
-    ttl = payload["actionable_signals"][0].get("original_ttl_ms") or 0
-    assert ttl >= 20_000
+    assert card["observation_remaining_ms"] == pytest.approx(300_000, abs=100)
+    assert card["display_state"] == "STUDYING_MATCH"
+    assert not payload["actionable_signals"]

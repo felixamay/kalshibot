@@ -53,7 +53,9 @@ from app.services.signals.mispricing import (
 from app.services.signals.ttl import SignalTTLCalculator
 from app.services.tennis.probability import ProbabilityResult, TennisProbabilityModel
 from app.services.tennis.provider import TennisLiveState
-from app.services.tennis.stage import pattern_serve_block, serve_fingerprint, serves_added, suggestion_block
+from app.services.tennis.service_games import ServiceGameTracker
+from app.services.signals.tennis_reasoner import TennisPatternReasoner
+
 
 logger = logging.getLogger(__name__)
 
@@ -144,11 +146,22 @@ class MatchContext:
     scheduled_start_ms: Optional[float] = 0.0
     # None uses the schedule. True/False comes from the live score feed.
     score_confirmed: Optional[bool] = None
-    # Serves observed since this match was linked. A pattern is made every two.
+    # Verified completed service games observed since this match was linked.
     serves_seen: int = 0
     last_pattern_serve: int = 0
     serve_fingerprint: Optional[tuple[Any, ...]] = None
     points_were_visible: bool = False
+    tracker: Any = None
+    reasoning_history: list = field(default_factory=list)
+    pending_blocks: list = field(default_factory=list)
+    latest_reasoning: Any = None
+    persisted_game_ids: set = field(default_factory=set)
+    baseline_service_strength: dict = field(default_factory=dict)
+    last_feed_revision: int = 0
+    invalidations_persisted: set = field(default_factory=set)
+    match_status: str = "LIVE"
+    event_id: Optional[str] = None
+    market_ids: list = field(default_factory=list)
 
 
 # A tennis match can run long. Outside this window the contract is not a live game.
@@ -190,13 +203,17 @@ class SignalEngine:
         self,
         settings: Settings | None = None,
         broadcast: BroadcastFn | None = None,
+        session_factory: Any = None,
     ) -> None:
         self.settings = settings or get_settings()
         self.broadcast = broadcast
+        self.session_factory = session_factory
         self.ttl_calc = SignalTTLCalculator(self.settings)
         self.conf_calc = SignalConfidenceCalculator(self.settings)
         self.prob_model = TennisProbabilityModel(self.settings)
         self.pattern_engine = PatternEngine(self.settings)
+        self.reasoner = TennisPatternReasoner(self.settings)
+        self.discovery_health = {}
         self.snap = EngineSnapshot()
         self._lock = asyncio.Lock()
         self._seq = 0
@@ -227,9 +244,7 @@ class SignalEngine:
         scheduled_start_ms: float | None = 0.0,
     ) -> MatchContext:
         now = now_ms or time.time() * 1000.0
-        # No 5-minute observation clock. A pattern is picked after every two
-        # serves. The first serve and the last five serves of a clear winner
-        # still gate a new suggestion. A price above 85% does not.
+        # Preserve the initial baseline study before any new entry.
         ctx = MatchContext(
             match_id=match_id,
             player_a=player_a,
@@ -238,11 +253,12 @@ class SignalEngine:
             market_ticker=market_ticker,
             market_db_id=market_db_id,
             observation_started_ms=now,
-            observation_ends_ms=now,
+            observation_ends_ms=now + self.settings.initial_observation_seconds * 1000,
             analysis_mode=AnalysisMode.OBSERVING.value,
             display_state=SignalType.STUDYING_MATCH,
             scheduled_start_ms=scheduled_start_ms,
         )
+        ctx.tracker = ServiceGameTracker(match_id)
         self.snap.matches[market_ticker] = ctx
         if market_ticker not in self.snap.analyzers:
             self.snap.analyzers[market_ticker] = RollingMarketAnalyzer(
@@ -251,22 +267,136 @@ class SignalEngine:
         return ctx
 
     def note_serves(self, ctx: MatchContext) -> None:
-        """Count serves the score feed has shown since the previous look."""
-        tennis = ctx.tennis
-        if tennis is None or not getattr(tennis, "available", False):
-            return
-        current = serve_fingerprint(tennis)
-        previous = ctx.serve_fingerprint
-        if previous is None:
-            ctx.serve_fingerprint = current
-            ctx.points_were_visible = bool(current[0]) or bool(current[1])
-            return
-        if current == previous:
-            return
-        added, visible = serves_added(previous, current, ctx.points_were_visible)
-        ctx.serves_seen += added
-        ctx.points_were_visible = visible
-        ctx.serve_fingerprint = current
+        """Count only verified completed service games and queue every block."""
+        now = time.time() * 1000
+        completed = ctx.tracker.update(ctx.tennis, now)
+        if ctx.tracker.revision != ctx.last_feed_revision:
+            ctx.persisted_game_ids.clear()
+            ctx.last_feed_revision = ctx.tracker.revision
+        if ctx.latest_reasoning and any(b.invalidated and b.block_id == ctx.latest_reasoning["block_id"] for b in ctx.tracker.blocks):
+            ctx.latest_reasoning.update(reliable=False, decision="WAIT", reason="FEED CORRECTION — WAIT")
+        ctx.serves_seen = len(ctx.tracker.games)
+        ctx.pending_blocks.extend(completed)
+
+    async def _reason_blocks(self, ctx, market, now):
+        for block in ctx.tracker.blocks:
+            if block.invalidated and block.block_id not in ctx.invalidations_persisted:
+                reasoning = next((r for r in ctx.reasoning_history if r["block_id"] == block.block_id), None)
+                if reasoning:
+                    reasoning.update(reliable=False, decision="WAIT", reason="FEED CORRECTION — WAIT")
+                    await self._persist_block(ctx, block, reasoning)
+                ctx.invalidations_persisted.add(block.block_id)
+        if any(g.game_id not in ctx.persisted_game_ids for g in ctx.tracker.games):
+            await self._persist_games(ctx)
+        while ctx.pending_blocks:
+            block = ctx.pending_blocks.pop(0)
+            analyzer = self.snap.analyzers[ctx.market_ticker]
+            ticks = [t for t in analyzer.ticks_since(block.start_time) if t.ts_ms <= block.end_time]
+            prices = [t.mid for t in ticks]
+            if prices:
+                block.starting_market_price, block.ending_market_price = prices[0], prices[-1]
+                block.high_price, block.low_price = max(prices), min(prices)
+                block.price_change = prices[-1] - prices[0]
+            block.spread = market.spread
+            block.liquidity = market.depth_yes + market.depth_no
+            block.orderbook_imbalance = market.imbalance
+            window = market.windows.get(5000)
+            if window:
+                block.market_volatility = window.volatility
+                block.momentum = window.momentum
+            if now >= ctx.observation_ends_ms:
+                self._ensure_baseline(ctx, ctx.market_ticker)
+            ctx.pattern_cache_key = ()
+            ctx.pattern_assessed_ms = 0
+            ctx.confirmation_count = 0
+            view = self._assess_pattern(ctx, market, now)
+            ctx.last_pattern = view
+            earlier = ctx.tracker.blocks[:ctx.tracker.blocks.index(block)]
+            if now < ctx.observation_ends_ms:
+                from app.services.signals.tennis_reasoner import service_score
+                initial_games = [g for b in ctx.tracker.blocks for g in b.games if b.end_time <= ctx.observation_ends_ms]
+                ctx.baseline_service_strength = {side: service_score(initial_games, side) for side in ("A", "B")}
+            reasoning = self.reasoner.analyze(block, earlier, ctx.baseline, market, view, ctx.position, ctx.baseline_service_strength)
+            if now < ctx.observation_ends_ms:
+                reasoning.update(reliable=False, decision="WAIT", reason="STUDYING FIRST 5 MINUTES")
+            reasoning.update(pattern_type=view.pattern_type, maximum_entry_price=view.maximum_entry_price,
+                             entry_zone_low=view.entry_zone_low, entry_zone_high=view.entry_zone_high)
+            block.return_pressure = {side: values["return_pressure"] for side, values in reasoning["players"].items()}
+            block.pattern_features = {"players": reasoning["players"], "patterns": reasoning["patterns"], "divergence": reasoning["divergence"]}
+            ctx.latest_reasoning = reasoning
+            ctx.reasoning_history.append(reasoning)
+            ctx.last_pattern_serve = ctx.serves_seen
+            await self._persist_block(ctx, block, reasoning)
+
+    async def _persist_games(self, ctx):
+        from app.database import AsyncSessionLocal
+        from app.models import ServiceGameRecord
+        import json
+        try:
+            async with (self.session_factory or AsyncSessionLocal)() as session:
+                for game in ctx.tracker.games:
+                    if game.game_id not in ctx.persisted_game_ids:
+                        from dataclasses import asdict
+                        await session.merge(ServiceGameRecord(id=f"{ctx.match_id}:{game.game_id}", match_id=ctx.match_id, payload=json.dumps(asdict(game))))
+                await session.commit()
+            ctx.persisted_game_ids.update(g.game_id for g in ctx.tracker.games)
+        except Exception:
+            logger.exception("Could not persist completed service games")
+
+    async def restore_match_history(self, ctx):
+        from app.database import AsyncSessionLocal
+        from app.models import ServiceGameRecord, ServeBlockRecord, ReasoningHistoryRecord
+        from app.services.tennis.service_games import ServeBlock, ServiceGame
+        from sqlalchemy import select
+        import json
+        try:
+            async with (self.session_factory or AsyncSessionLocal)() as session:
+                blocks = (await session.execute(select(ServeBlockRecord).where(ServeBlockRecord.match_id == ctx.match_id))).scalars()
+                ctx.tracker.blocks = sorted([ServeBlock(**json.loads(row.payload)) for row in blocks], key=lambda b: b.end_time)
+                rows = (await session.execute(select(ServiceGameRecord).where(ServiceGameRecord.match_id == ctx.match_id))).scalars()
+                ctx.tracker.games = sorted([ServiceGame(**json.loads(row.payload)) for row in rows], key=lambda g: g.end_time)
+                rows = (await session.execute(select(ReasoningHistoryRecord).where(ReasoningHistoryRecord.match_id == ctx.match_id))).scalars()
+                ctx.reasoning_history = sorted([json.loads(row.payload) for row in rows], key=lambda r: r["end_time"])
+            ctx.tracker.seen = {g.game_id for g in ctx.tracker.games}
+            ctx.persisted_game_ids = ctx.tracker.seen.copy()
+            ctx.serves_seen = len(ctx.tracker.games)
+            if ctx.reasoning_history:
+                ctx.latest_reasoning = dict(ctx.reasoning_history[-1], reliable=False, decision="WAIT", reason="Restart: awaiting fresh service-game evidence")
+        except Exception:
+            logger.exception("Could not restore match reasoning history")
+
+    async def _persist_block(self, ctx, block, reasoning):
+        from app.database import AsyncSessionLocal
+        from app.models import ServiceGameRecord, ServeBlockRecord, ServeBlockFeatureRecord, ServeBlockReasoningRecord, TennisMarketDivergenceRecord, ReasoningHistoryRecord
+        import json
+        try:
+            async with (self.session_factory or AsyncSessionLocal)() as session:
+                for game in block.games:
+                    record_id = f"{ctx.match_id}:{game['game_id']}"
+                    await session.merge(ServiceGameRecord(id=record_id, match_id=ctx.match_id, payload=json.dumps(game)))
+                for model, payload in [(ServeBlockRecord, block.as_dict()), (ServeBlockFeatureRecord, block.pattern_features),
+                    (ServeBlockReasoningRecord, reasoning), (TennisMarketDivergenceRecord, {k: reasoning[k] for k in ('tennis_momentum', 'market_momentum', 'divergence')}),
+                    (ReasoningHistoryRecord, reasoning)]:
+                    await session.merge(model(id=block.block_id, match_id=ctx.match_id, payload=json.dumps(payload)))
+                await session.commit()
+        except Exception:
+            logger.exception("Could not persist serve-block reasoning")
+
+    async def on_tennis_update(self, ticker, status=None):
+        """Score changes trigger block reasoning without refreshing old quote timestamps."""
+        async with self._lock:
+            ctx = self.snap.matches.get(ticker)
+            analyzer = self.snap.analyzers.get(ticker)
+            if ctx and analyzer:
+                if status is not None:
+                    analyzer.state.status = status
+                self.note_serves(ctx)
+                await self._reason_blocks(ctx, analyzer.state, time.time() * 1000)
+                await self._validate_active_signal(ctx, analyzer.state, time.time() * 1000)
+                if ctx.position:
+                    await self._evaluate_position(ctx, analyzer.state, time.time() * 1000, emergency_forced=analyzer.state.data_age_ms > self.settings.max_data_age_ms)
+                elif ctx.latest_reasoning:
+                    ctx.hold_reason = ctx.latest_reasoning["reason"]
 
     async def on_market_update(
         self,
@@ -306,6 +436,9 @@ class SignalEngine:
         if not ctx:
             return
 
+        self.note_serves(ctx)
+        block_completed = bool(ctx.pending_blocks)
+        await self._reason_blocks(ctx, market, now)
         # Connection / stale / market status checks invalidate active signals
         await self._validate_active_signal(ctx, market, now)
 
@@ -326,7 +459,7 @@ class SignalEngine:
             return
 
         status_u = (market.status or "").upper()
-        if status_u in ("CLOSED", "SETTLED"):
+        if status_u in ("CLOSED", "SETTLED", "FINALIZED", "DETERMINED"):
             ctx.display_state = SignalType.NO_BET
             ctx.hold_reason = "Market is closed. No entry."
             return
@@ -355,26 +488,12 @@ class SignalEngine:
             )
             return
 
-        # The first serve and the last five serves of a clear winner still
-        # hold a new pattern. A favorite above 85% does not: that used to
-        # cancel the bet a second after it was picked and leave the card studying.
-        self.note_serves(ctx)
-        block = suggestion_block(ctx.tennis, market.mid)
-        if block:
-            active = self._active_signal_for(ticker)
-            if active and active.status == SignalStatus.ACTIVE and active.is_actionable(now):
-                price = market.executable_yes_price() or market.mid
-                active.cancel(
-                    ExpirationReason.PATTERN_INVALIDATED,
-                    price=price,
-                    message=block,
-                    server_now_ms=now,
-                )
-                await self._emit_signal_update(active)
-            ctx.analysis_mode = AnalysisMode.OBSERVING.value
+        if ctx.position is not None:
+            await self._evaluate_position(ctx, market, now, emergency_forced=False)
+            return
+        if now < ctx.observation_ends_ms:
             ctx.display_state = SignalType.STUDYING_MATCH
-            ctx.hold_reason = block
-            self._remember_phase(ctx, SignalType.STUDYING_MATCH, now)
+            ctx.hold_reason = "STUDYING FIRST 5 MINUTES"
             return
 
         if ctx.position is not None:
@@ -411,19 +530,16 @@ class SignalEngine:
             )
             return
 
-        if ctx.tennis is not None and ctx.tennis.available:
-            waiting = pattern_serve_block(ctx.serves_seen, ctx.last_pattern_serve)
-            if waiting:
-                active = self._active_signal_for(ticker)
-                if active and active.is_actionable(now) and active.signal_type in _PATTERN_BET_TYPES:
-                    ctx.display_state = active.signal_type
-                    ctx.hold_reason = active.bet_instruction or waiting
-                    return
-                ctx.display_state = SignalType.STUDYING_MATCH
-                ctx.hold_reason = waiting
-                self._remember_phase(ctx, SignalType.STUDYING_MATCH, now)
+        if ctx.tracker.available:
+            reasoning = ctx.latest_reasoning
+            if not reasoning or not reasoning["reliable"]:
+                ctx.display_state = SignalType.SEARCHING_FOR_ENTRY
+                ctx.hold_reason = reasoning["reason"] if reasoning else f"SERVE BLOCK: {len(ctx.tracker.pending)} / 2 GAMES COMPLETE — WAIT"
                 return
-
+        if block_completed:
+            ctx.display_state = SignalType.ENTRY_DEVELOPING if ctx.latest_reasoning and ctx.latest_reasoning["reliable"] else SignalType.SEARCHING_FOR_ENTRY
+            ctx.hold_reason = ctx.latest_reasoning["reason"] if ctx.latest_reasoning else "WAIT"
+            return
         await self._evaluate_entry(ctx, market, now)
 
     def _score_market(self, ctx: MatchContext, market: MarketState) -> ProbabilityResult:
@@ -497,7 +613,7 @@ class SignalEngine:
         if ctx.baseline is not None:
             return ctx.baseline
         analyzer = self.snap.analyzers.get(ticker)
-        ticks = analyzer.ticks_since(ctx.observation_started_ms) if analyzer else []
+        ticks = [t for t in analyzer.ticks_since(ctx.observation_started_ms) if t.ts_ms <= ctx.observation_ends_ms] if analyzer else []
         ctx.baseline = build_baseline(ticks, self.settings)
         return ctx.baseline
 
@@ -580,49 +696,52 @@ class SignalEngine:
         if not self.settings.pattern_engine_enabled:
             await self._evaluate_legacy_entry(ctx, market, now, prob, read)
             return
+        previous_reasoning_state = (ctx.latest_reasoning.get("decision"), ctx.latest_reasoning.get("confirmation_count")) if ctx.latest_reasoning else None
         view = self._assess_pattern(ctx, market, now)
+        if ctx.latest_reasoning and view.pattern_type != ctx.latest_reasoning.get("pattern_type"):
+            ctx.latest_reasoning.update(reliable=False, decision="WAIT", reason="PATTERN CHANGED — WAIT FOR NEXT SERVICE BLOCK")
+            ctx.confirmation_count = 0
+            view.confirming = False
+            view.decision = "SEARCHING"
+        if ctx.latest_reasoning:
+            view.entry_score = min(view.entry_score, ctx.latest_reasoning["entry_score"])
+            view.confidence = min(view.confidence, ctx.latest_reasoning["pattern_confidence"])
+            if not ctx.latest_reasoning["reliable"] or view.entry_score < self.settings.pattern_entry_score:
+                view.confirming = False
+                view.decision = "PATTERN_WATCH"
+            if view.decision == "STRONG_PATTERN_SIGNAL" and view.entry_score < self.settings.strong_pattern_entry_score:
+                view.decision = "PATTERN_ENTRY_SIGNAL"
         if view.confirming:
             ctx.confirmation_count += 1
             view = self._assess_pattern(ctx, market, now)
-        elif view.decision in ("FAILED_BREAKOUT", "PATTERN_ALREADY_ADVANCED", "SEARCHING"):
-            ctx.confirmation_count = 0 if view.decision != "SEARCHING" else max(0, ctx.confirmation_count - 1)
+        else:
+            ctx.confirmation_count = 0
+        if ctx.latest_reasoning:
+            view.entry_score = min(view.entry_score, ctx.latest_reasoning["entry_score"])
+            view.confidence = min(view.confidence, ctx.latest_reasoning["pattern_confidence"])
+            if view.decision == "STRONG_PATTERN_SIGNAL" and (view.entry_score < self.settings.strong_pattern_entry_score or view.confidence < self.settings.strong_pattern_confidence):
+                view.decision = "PATTERN_ENTRY_SIGNAL"
         ctx.last_pattern = view
-        # One pattern per pair of serves. Keep looking until this pair actually makes one.
-        if (
-            ctx.tennis is not None
-            and ctx.tennis.available
-            and view.decision != "SEARCHING"
-        ):
-            ctx.last_pattern_serve = ctx.serves_seen
+        if ctx.latest_reasoning:
+            ctx.latest_reasoning["confirmation_count"] = ctx.confirmation_count
+            if ctx.latest_reasoning.get("questions"):
+                ctx.latest_reasoning["questions"]["tradeable_window_now"] = view.decision in _PATTERN_ENTRIES
         ask = market.executable_yes_price() if view.player_side != "NO" else market.executable_no_price()
-        if ask <= 0:
-            ask = view.current_price
         view.current_price = ask
-        view.entry_zone_low = round(ask - 1.0, 2)
-        view.entry_zone_high = round(ask + 1.0, 2)
-        view.maximum_entry_price = round(ask + max(self.settings.max_entry_slippage_cents, _PATTERN_CHASE_CENTS), 2)
+        if ctx.latest_reasoning and ctx.latest_reasoning.get("maximum_entry_price") is not None:
+            view.maximum_entry_price = ctx.latest_reasoning["maximum_entry_price"]
+            view.entry_zone_low = ctx.latest_reasoning["entry_zone_low"]
+            view.entry_zone_high = ctx.latest_reasoning["entry_zone_high"]
+            if ask > view.maximum_entry_price:
+                view.decision = "PATTERN_ALREADY_ADVANCED"
+                view.confirming = False
+                ctx.confirmation_count = 0
         if view.entry_score >= self.settings.pattern_watch_score and (
             ctx.best_seen_ask is None or ask < ctx.best_seen_ask
         ):
             ctx.best_seen_ask = ask
 
         active = self._active_signal_for(ticker)
-        # The next quote often relabels the same move as late, failed, or still
-        # discovering. That used to erase the card in about a second. The
-        # countdown is the window. A real chase still cancels it.
-        if active and active.is_actionable(now) and active.signal_type in _PATTERN_BET_TYPES:
-            if ask > active.maximum_entry_price:
-                message = "DO NOT ENTER. PRICE MOVED BEYOND ENTRY WINDOW."
-                self.pattern_engine.record_expiry(active.pattern_type or "")
-                active.cancel(ExpirationReason.PRICE_MOVED, price=ask, message=message, server_now_ms=now)
-                await self._emit_signal_update(active)
-                ctx.confirmation_count = 0
-                ctx.display_state = SignalType.DO_NOT_ENTER
-                ctx.hold_reason = message
-                return
-            ctx.display_state = active.signal_type
-            ctx.hold_reason = active.bet_instruction or view.explanation
-            return
         if active and active.is_actionable(now):
             book_text = " ".join(view.blockers)
             book_broke = any(
@@ -657,6 +776,12 @@ class SignalEngine:
                 ctx.hold_reason = view.explanation
                 return
 
+        if ctx.latest_reasoning:
+            ctx.latest_reasoning["decision"] = {"PATTERN_DEVELOPING": "ENTRY DEVELOPING", "PATTERN_ENTRY_SIGNAL": "ENTRY", "STRONG_PATTERN_SIGNAL": "STRONG ENTRY", "PATTERN_ALREADY_ADVANCED": "DO NOT CHASE"}.get(view.decision, "WATCH" if ctx.latest_reasoning["reliable"] else "WAIT")
+        if ctx.latest_reasoning and previous_reasoning_state != (ctx.latest_reasoning.get("decision"), ctx.latest_reasoning.get("confirmation_count")):
+            block = next((b for b in ctx.tracker.blocks if b.block_id == ctx.latest_reasoning["block_id"]), None)
+            if block:
+                await self._persist_block(ctx, block, ctx.latest_reasoning)
         state = _PATTERN_STATES.get(view.decision, SignalType.SEARCHING_FOR_ENTRY)
         ctx.display_state = state
         ctx.hold_reason = view.explanation
@@ -851,6 +976,12 @@ class SignalEngine:
         else:
             state = _SLIP_STATES.get(view.decision, SignalType.HOLD)
             ctx.hold_reason = view.explanation
+        if ctx.latest_reasoning and ctx.latest_reasoning.get("pattern_health") is not None:
+            if ctx.latest_reasoning["pattern_health"] <= 25:
+                state = SignalType.STOP_EXIT_SIGNAL
+                ctx.hold_reason = "PATTERN BROKEN — STOP / EXIT SIGNAL. Manual decision required."
+            elif ctx.latest_reasoning["pattern_health"] <= 40 and state == SignalType.HOLD:
+                state = SignalType.SLIPPING
         ctx.display_state = state
         ctx.analysis_mode = "POSITION"
         self._remember_phase(ctx, state, now)
@@ -886,6 +1017,9 @@ class SignalEngine:
         model_p = ctx.last_model.model_win_probability if ctx.last_model else 0.5
         score = ctx.last_entry.entry_score if ctx.last_entry else (ctx.last_confidence or 0.0)
         pattern = ctx.last_pattern
+        active = self._active_signal_for(ticker)
+        if active and active.status == SignalStatus.ACTIVE:
+            active.cancel(ExpirationReason.PATTERN_INVALIDATED, message="Manual entry recorded; position monitor active.", server_now_ms=now)
         ctx.position = TrackedPosition(
             position_id=position_id,
             player=player,
@@ -1041,7 +1175,7 @@ class SignalEngine:
             sig.cancel(ExpirationReason.MARKET_SUSPENDED, price=market.executable_yes_price(), server_now_ms=now)
             await self._emit_signal_update(sig)
             return
-        if status_u in ("CLOSED", "SETTLED"):
+        if status_u in ("CLOSED", "SETTLED", "FINALIZED", "DETERMINED"):
             sig.cancel(ExpirationReason.MARKET_CLOSED, price=market.executable_yes_price(), server_now_ms=now)
             await self._emit_signal_update(sig)
             return
@@ -1066,6 +1200,21 @@ class SignalEngine:
             else:
                 ctx.display_state = SignalType.DO_NOT_CHASE
             ctx.confirmation_count = 0
+            return
+
+        direction_sign = 1 if sig.direction == "YES" else -1
+        reason = None
+        if market.spread > self.settings.max_spread_cents:
+            reason = ExpirationReason.SPREAD_EXPANSION
+        elif market.depth_yes + market.depth_no < self.settings.min_liquidity_contracts:
+            reason = ExpirationReason.LIQUIDITY_LOSS
+        elif market.imbalance * direction_sign < -0.55:
+            reason = ExpirationReason.ORDERBOOK_REVERSAL
+        elif ctx.latest_reasoning and not ctx.latest_reasoning["reliable"] and sig.signal_type in _PATTERN_BET_TYPES:
+            reason = ExpirationReason.PATTERN_INVALIDATED
+        if reason:
+            sig.cancel(reason, price=current, server_now_ms=now)
+            await self._emit_signal_update(sig)
             return
 
         if sig.signal_type in (
@@ -1205,11 +1354,7 @@ class SignalEngine:
                 direction,
                 pattern.pattern_type,
             )
-            # The bet card has to stay up long enough to read and act.
-            # Never shorter than 20 seconds, even on a thin or fast market.
-            floor_ms = 20_000
-            cap_ms = max(floor_ms, int(self.settings.max_signal_ttl_seconds * 1000))
-            ttl_ms = min(max(ttl.ttl_ms, floor_ms), cap_ms)
+            ttl_ms = ttl.ttl_ms
         else:
             bet_instruction, market_instruction = "", ""
             ttl_ms = ttl.ttl_ms
@@ -1307,8 +1452,17 @@ class SignalEngine:
         now = time.time() * 1000.0
         expired: list[LiveSignal] = []
         for sig in self.snap.signals.values():
-            if sig.status == SignalStatus.ACTIVE and now >= sig.expires_at_ms:
-                sig.cancel(ExpirationReason.TTL_EXPIRED, price=sig.market_price, server_now_ms=now)
+            if sig.status != SignalStatus.ACTIVE:
+                continue
+            analyzer = self.snap.analyzers.get(sig.market_ticker)
+            market = analyzer.state if analyzer else None
+            reason = None
+            if now >= sig.expires_at_ms:
+                reason = ExpirationReason.TTL_EXPIRED
+            elif market is None or market.data_age_ms > self.settings.max_data_age_ms:
+                reason = ExpirationReason.STALE_DATA
+            if reason:
+                sig.cancel(reason, price=sig.market_price, server_now_ms=now)
                 expired.append(sig)
         return expired
 
@@ -1318,7 +1472,7 @@ class SignalEngine:
         live = [
             (ticker, ctx)
             for ticker, ctx in self.snap.matches.items()
-            if match_is_live(ctx, now)
+            if match_is_live(ctx, now) and (not self.snap.analyzers.get(ticker) or self.snap.analyzers[ticker].state.status.upper() not in {"CLOSED", "SETTLED", "FINALIZED", "DETERMINED", "SUSPENDED"})
         ]
         live_tickers = {ticker for ticker, _ in live}
         for ticker, ctx in live:
@@ -1329,6 +1483,16 @@ class SignalEngine:
             cards.append(
                 {
                     "match_id": ctx.match_id,
+                    "event_id": ctx.event_id,
+                    "market_ids": ctx.market_ids,
+                    "match_status": ctx.match_status,
+                    "service_games_analyzed": len(ctx.tracker.games),
+                    "serve_block_progress": len(ctx.tracker.pending),
+                    "service_game_data_available": ctx.tracker.available,
+                    "service_game_data_note": ctx.tracker.note,
+                    "latest_reasoning": ctx.latest_reasoning,
+                    "reasoning_history": ctx.reasoning_history,
+
                     "player_a": ctx.player_a,
                     "player_b": ctx.player_b,
                     "tournament": ctx.tournament,
@@ -1376,7 +1540,7 @@ class SignalEngine:
         actionable = [
             s.to_public_dict(now)
             for s in self.snap.signals.values()
-            if s.is_actionable(now)
+            if s.is_actionable(now) and s.market_ticker in self.snap.matches and not self.snap.matches[s.market_ticker].position
         ]
         # Safety: filter any that somehow aren't actionable
         actionable = [s for s in actionable if s["actionable"] and s["remaining_ms"] > 0]
@@ -1384,14 +1548,15 @@ class SignalEngine:
         actionable.sort(key=lambda item: item.get("created_at_ms") or 0, reverse=True)
 
         return {
+            "discovery_health": self.discovery_health,
             "server_time_ms": now,
             "connection_status": self.snap.connection_status.value,
             "live_match_count": len(cards),
             "matches": cards,
             "actionable_signals": actionable,
             "signal_history": self.snap.signal_history[-50:],
-            "no_live_markets": len(cards) == 0,
-            "message": "NO LIVE TENNIS MARKETS" if len(cards) == 0 else None,
+            "no_live_markets": len(cards) == 0 and self.discovery_health.get("complete", False),
+            "message": ("NO LIVE TENNIS MARKETS ON KALSHI" if self.discovery_health.get("complete", False) else "TENNIS DISCOVERY UNAVAILABLE — RECONCILIATION PENDING") if len(cards) == 0 else None,
             "max_data_age_ms": self.settings.max_data_age_ms,
         }
 

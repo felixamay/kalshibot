@@ -457,3 +457,34 @@ class PatternPerformance(Base):
     average_confidence: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     average_entry_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     low_sample_size: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class ReasoningRecordMixin:
+    id: Mapped[str] = mapped_column(String(512), primary_key=True)
+    match_id: Mapped[str] = mapped_column(String(128), index=True)
+    payload: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ServiceGameRecord(ReasoningRecordMixin, Base):
+    __tablename__ = "service_games"
+
+
+class ServeBlockRecord(ReasoningRecordMixin, Base):
+    __tablename__ = "serve_blocks"
+
+
+class ServeBlockFeatureRecord(ReasoningRecordMixin, Base):
+    __tablename__ = "serve_block_features"
+
+
+class ServeBlockReasoningRecord(ReasoningRecordMixin, Base):
+    __tablename__ = "serve_block_reasoning"
+
+
+class TennisMarketDivergenceRecord(ReasoningRecordMixin, Base):
+    __tablename__ = "tennis_market_divergence"
+
+
+class ReasoningHistoryRecord(ReasoningRecordMixin, Base):
+    __tablename__ = "reasoning_history"

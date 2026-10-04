@@ -44,7 +44,7 @@ export function MatchCard({
           </h3>
           <ScoreLink tennis={match.tennis} />
         </div>
-        <StatusPill status={match.market_status} />
+        <StatusPill status={match.match_status || match.market_status} />
       </div>
 
       <div className="mt-4 grid grid-cols-2 sm:grid-cols-3 gap-3 font-mono text-sm">
@@ -52,7 +52,7 @@ export function MatchCard({
           label="Kalshi"
           value={
             match.kalshi_probability != null
-              ? `${Math.round(match.kalshi_probability * 100)}¢`
+              ? `${Math.round(match.kalshi_probability * 100)}¢ / ${Math.round(100 - match.kalshi_probability * 100)}¢`
               : "—"
           }
         />
@@ -115,6 +115,31 @@ export function MatchCard({
         {match.read?.close_to_signal && (
           <span className="text-signal-amber">· Close to signal</span>
         )}
+      </div>
+
+      <div className="mt-4 border border-white/10 p-3 text-sm">
+        <p>Current Server: {match.tennis?.server === "A" ? match.player_a : match.tennis?.server === "B" ? match.player_b : "Unavailable"}</p>
+        <p>Service Games Analyzed: {match.service_games_analyzed ?? 0}</p>
+        <p>{match.service_game_data_available ? `SERVE BLOCK: ${match.serve_block_progress ?? 0} / 2 GAMES COMPLETE` : "SERVICE-GAME DATA UNAVAILABLE"}</p>
+        <p className="text-mist/60">{match.service_game_data_note}</p>
+        {match.observation_remaining_ms > 0 && <p>STUDYING FIRST 5 MINUTES · {formatMatchTimer(Math.max(0, (match.observation_ends_ms || serverNow) - serverNow))}</p>}
+        {match.latest_reasoning && <div className="mt-3">
+          <p>LATEST TWO-SERVICE-GAME REASONING</p>
+          <p>{match.latest_reasoning.summary}</p>
+          {(["A", "B"] as const).map(side => {
+            const player = match.latest_reasoning?.players?.[side];
+            return player ? <p key={side}>{side === "A" ? match.player_a : match.player_b}: Service Strength {player.service_strength == null ? "Unavailable" : `${Math.round(player.service_strength)}/100`} · Return Pressure {player.return_pressure == null ? "Unavailable" : `${Math.round(player.return_pressure)}/100`} · {player.momentum}</p> : null;
+          })}
+          <p>Tennis Momentum: {match.latest_reasoning.tennis_momentum?.toFixed(1) ?? "Unavailable"} · Market Momentum: {match.latest_reasoning.market_momentum?.toFixed(1) ?? "Unavailable"} · Divergence: {match.latest_reasoning.divergence?.toFixed(1) ?? "Unavailable"}</p>
+          <p>Confirmation: {match.latest_reasoning.confirmation_count}/3 · Data: {match.latest_reasoning.data_quality ?? "Limited"}</p>
+          {match.latest_reasoning.pattern_health != null && <p>Pattern Health: {Math.round(match.latest_reasoning.pattern_health)}/100</p>}
+          <p>Pattern: {match.latest_reasoning.patterns.join(" + ") || "NO RELIABLE PATTERN"}</p>
+          <p>Confidence: {Math.round(match.latest_reasoning.pattern_confidence)} · Entry Score: {Math.round(match.latest_reasoning.entry_score)}</p>
+          <p>{match.latest_reasoning.decision} · {match.latest_reasoning.reason}</p>
+        </div>}
+        {!!match.reasoning_history?.length && <ol className="mt-3 space-y-1">
+          {match.reasoning_history.map((r, i) => <li key={r.block_id}>Block {i + 1}: {r.patterns.join(" + ") || "No pattern"} · {r.decision}</li>)}
+        </ol>}
       </div>
 
       {match.pattern && match.pattern.pattern_name && (

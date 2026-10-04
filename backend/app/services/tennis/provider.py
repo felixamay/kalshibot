@@ -37,6 +37,9 @@ class TennisLiveState:
     game_percent: Optional[float] = None
     # Points left if the provider already knows. Last 5 serves blocks a clear winner.
     serves_remaining: Optional[int] = None
+    is_tiebreak: bool = False
+    completed_service_games: Optional[list[dict]] = None
+    feed_revision: int = 0
     recent_points: list[str] = field(default_factory=list)
     available: bool = False
     source: str = "none"
@@ -163,6 +166,9 @@ class HttpTennisProvider(TennisDataProvider):
                 first_serve_pct_b=data.get("first_serve_pct_b"),
                 game_percent=data.get("game_percent"),
                 serves_remaining=data.get("serves_remaining"),
+                is_tiebreak=bool(data.get("is_tiebreak") or data.get("is_match_tiebreak")),
+                completed_service_games=data.get("completed_service_games"),
+                feed_revision=int(data.get("feed_revision", 0)),
                 recent_points=list(data.get("recent_points") or []),
                 available=True,
                 source=self.settings.tennis_provider,

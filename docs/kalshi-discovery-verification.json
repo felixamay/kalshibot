@@ -1,0 +1,190 @@
+{
+  "health": {
+    "events_checked": 13212,
+    "markets_checked": 123497,
+    "tennis_markets_found": 1032,
+    "last_refresh_ms": 1791079207110.5305,
+    "complete": true,
+    "errors": []
+  },
+  "live_contract_count": 22,
+  "live_match_count": 11,
+  "live_matches": [
+    {
+      "ticker": "KXWTACHALLENGERMATCH-26OCT03ZHEYIH-ZHE",
+      "players": [
+        "Wushuang Zheng",
+        "Qu"
+      ],
+      "start": "2026-10-03T11:50:00Z"
+    },
+    {
+      "ticker": "KXWTACHALLENGERMATCH-26OCT03ZHEYIH-YIH",
+      "players": [
+        "Yihan Qu",
+        "Zheng"
+      ],
+      "start": "2026-10-03T11:50:00Z"
+    },
+    {
+      "ticker": "KXWTACHALLENGERMATCH-26OCT03MATWEI-WEI",
+      "players": [
+        "Sijia Wei",
+        "Matsuda"
+      ],
+      "start": "2026-10-03T11:50:00Z"
+    },
+    {
+      "ticker": "KXWTACHALLENGERMATCH-26OCT03MATWEI-MAT",
+      "players": [
+        "Rinko Matsuda",
+        "Wei"
+      ],
+      "start": "2026-10-03T11:50:00Z"
+    },
+    {
+      "ticker": "KXWTACHALLENGERMATCH-26OCT03NUGOKA-OKA",
+      "players": [
+        "Kyoka Okamura",
+        "Nugroho"
+      ],
+      "start": "2026-10-03T08:00:00Z"
+    },
+    {
+      "ticker": "KXWTACHALLENGERMATCH-26OCT03NUGOKA-NUG",
+      "players": [
+        "Priska Madelyn Nugroho",
+        "Okamura"
+      ],
+      "start": "2026-10-03T08:00:00Z"
+    },
+    {
+      "ticker": "KXWTACHALLENGERMATCH-26OCT03ZAVSID-ZAV",
+      "players": [
+        "Katarina Zavatska",
+        "Sidorova"
+      ],
+      "start": "2026-10-03T08:00:00Z"
+    },
+    {
+      "ticker": "KXWTACHALLENGERMATCH-26OCT03ZAVSID-SID",
+      "players": [
+        "Kristiana Sidorova",
+        "Zavatska"
+      ],
+      "start": "2026-10-03T08:00:00Z"
+    },
+    {
+      "ticker": "KXWTACHALLENGERMATCH-26OCT03JIAZON-ZON",
+      "players": [
+        "Zongyu Li",
+        "Lu"
+      ],
+      "start": "2026-10-03T08:00:00Z"
+    },
+    {
+      "ticker": "KXWTACHALLENGERMATCH-26OCT03JIAZON-JIA",
+      "players": [
+        "Jia-Jing Lu",
+        "Li"
+      ],
+      "start": "2026-10-03T08:00:00Z"
+    },
+    {
+      "ticker": "KXWTACHALLENGERMATCH-26OCT02SHIYUA-YUA",
+      "players": [
+        "Chengyiyi Yuan",
+        "Shi"
+      ],
+      "start": "2026-10-03T06:00:00Z"
+    },
+    {
+      "ticker": "KXWTACHALLENGERMATCH-26OCT02SHIYUA-SHI",
+      "players": [
+        "Han Shi",
+        "Yuan"
+      ],
+      "start": "2026-10-03T06:00:00Z"
+    },
+    {
+      "ticker": "KXWTACHALLENGERMATCH-26OCT02YANSAI-YAN",
+      "players": [
+        "Yidi Yang",
+        "Saigo"
+      ],
+      "start": "2026-10-03T06:00:00Z"
+    },
+    {
+      "ticker": "KXWTACHALLENGERMATCH-26OCT02YANSAI-SAI",
+      "players": [
+        "Rina Saigo",
+        "Yang"
+      ],
+      "start": "2026-10-03T06:00:00Z"
+    },
+    {
+      "ticker": "KXWTACHALLENGERMATCH-26OCT02HUAKHO-KHO",
+      "players": [
+        "Darya Khomutsianskaya",
+        "Huang"
+      ],
+      "start": "2026-10-03T06:00:00Z"
+    },
+    {
+      "ticker": "KXWTACHALLENGERMATCH-26OCT02HUAKHO-HUA",
+      "players": [
+        "Yujia Huang",
+        "Khomutsianskaya"
+      ],
+      "start": "2026-10-03T06:00:00Z"
+    },
+    {
+      "ticker": "KXITFMATCH-26OCT03HURYIL-YIL",
+      "players": [
+        "Kerem Yilmaz",
+        "Hurrion"
+      ],
+      "start": "2026-10-03T12:00:00Z"
+    },
+    {
+      "ticker": "KXITFMATCH-26OCT03HURYIL-HUR",
+      "players": [
+        "Millen Hurrion",
+        "Yilmaz"
+      ],
+      "start": "2026-10-03T12:00:00Z"
+    },
+    {
+      "ticker": "KXITFMATCH-26OCT03WALSIN-WAL",
+      "players": [
+        "Marcus Walters",
+        "Singh"
+      ],
+      "start": "2026-10-03T12:00:00Z"
+    },
+    {
+      "ticker": "KXITFMATCH-26OCT03WALSIN-SIN",
+      "players": [
+        "Digvijay Pratap Singh",
+        "Walters"
+      ],
+      "start": "2026-10-03T12:00:00Z"
+    },
+    {
+      "ticker": "KXATPDOUBLES-26OCT02MELZVECASGLA-MELZVE",
+      "players": [
+        "Melo / Zverev",
+        "Cash / Glasspool"
+      ],
+      "start": "2026-10-03T06:00:00Z"
+    },
+    {
+      "ticker": "KXATPDOUBLES-26OCT02MELZVECASGLA-CASGLA",
+      "players": [
+        "Melo / Zverev",
+        "Cash / Glasspool"
+      ],
+      "start": "2026-10-03T06:00:00Z"
+    }
+  ]
+}

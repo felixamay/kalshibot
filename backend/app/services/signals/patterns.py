@@ -687,7 +687,7 @@ class PatternEngine:
             book,
         )
         # Pattern bets do not wait for a confirmation count.
-        needed = 0
+        needed = max(3, settings.pattern_confirmation_count)
         if setup is None:
             return PatternAssessment(
                 decision="SEARCHING",
@@ -776,8 +776,10 @@ class PatternEngine:
             confirming_signals=len(signals),
             book=book,
             evidence=evidence,
-            discovered=prior_counts.get(pattern_type, 0) >= 1,
+            discovered=prior_counts.get(pattern_type, 0) >= settings.min_pattern_occurrences,
         )
+        confirming = not blockers and len(signals) >= 3 and decision in ("PATTERN_DEVELOPING", "PATTERN_ENTRY_SIGNAL", "STRONG_PATTERN_SIGNAL")
+        tradeable = decision in ("PATTERN_ENTRY_SIGNAL", "STRONG_PATTERN_SIGNAL")
         if decision in ("PATTERN_ENTRY_SIGNAL", "STRONG_PATTERN_SIGNAL"):
             timeline.append({"t_ms": now_ms or (points[-1].ts_ms if points else 0), "kind": "entry_signal", "price": book.price})
             tradeable = True
@@ -1628,40 +1630,28 @@ class PatternEngine:
                 ["Pattern already advanced. Do not chase."],
                 ["Do not chase — move already advanced."],
             )
-        if label not in ("POTENTIAL", "RECURRING"):
-            reasons.append("This pattern has been seen. Repetition is not required before the alert.")
-        else:
-            reasons.append("I have seen this market behave this way before.")
-        reasons.append("The same pattern appears to be forming.")
-        depth_unknown = (book.depth_bid + book.depth_ask) <= 0
-        spread_ok = book.spread_quality not in ("POOR", "VERY_POOR")
-        # A live quote with no printed depth is still a market. Do not hide the pattern.
-        market_ok = book.fresh and not book.extreme and spread_ok
         if not book.fresh:
             blockers.append("Market data is stale")
         if book.extreme:
             blockers.append("Volatility is extreme for this match")
         if book.spread_quality in ("POOR", "VERY_POOR"):
             blockers.append("Spread is not acceptable")
-        if book.liquidity_quality in ("LOW", "VERY_LOW") and not depth_unknown:
-            reasons.append("Depth is thin. The pattern is still the bet.")
-        if discovered:
-            reasons.append("This pattern has already shown up in this match.")
-        # The two-serve study happens before this assessment. Pick the pattern now.
-        if market_ok and stage in ("EARLY", "DEVELOPING", "MATURE"):
-            reasons.append("This is the pattern to bet.")
-            if (
-                entry_score >= settings.strong_pattern_entry_score
-                and confidence >= settings.strong_pattern_confidence
-                and book.spread_quality in ("EXCELLENT", "GOOD")
-            ):
-                return "STRONG_PATTERN_SIGNAL", True, [], reasons
-            return "PATTERN_ENTRY_SIGNAL", True, [], reasons
-        if not market_ok:
-            reasons.append("Waiting for the book, spread, and liquidity to agree.")
-        else:
-            reasons.append("Pattern has already moved. Do not chase a late stage.")
-        return "PATTERN_DEVELOPING", False, blockers, reasons
+        if book.liquidity_quality in ("LOW", "VERY_LOW") or book.depth_bid + book.depth_ask <= 0:
+            blockers.append("Liquidity is insufficient or unavailable")
+        if confidence < settings.min_pattern_confidence:
+            blockers.append("Low pattern confidence")
+        if entry_score < settings.pattern_entry_score:
+            blockers.append("Entry score below threshold")
+        if label != "RECURRING" and not discovered:
+            blockers.append("Repeatable pattern incomplete")
+        confirming = not blockers and confirming_signals >= 3
+        if not confirming:
+            return ("PATTERN_WATCH" if entry_score >= settings.pattern_watch_score else "PATTERN_DEVELOPING"), False, blockers, ["No confirmed tradeable pattern. WAIT."]
+        if confirmation_count < max(3, settings.pattern_confirmation_count):
+            return "PATTERN_DEVELOPING", True, [], [f"ENTRY DEVELOPING: {confirmation_count}/3 confirming updates"]
+        if entry_score >= settings.strong_pattern_entry_score and confidence >= settings.strong_pattern_confidence:
+            return "STRONG_PATTERN_SIGNAL", True, [], ["Repeated pattern and market confirmation agree"]
+        return "PATTERN_ENTRY_SIGNAL", True, [], ["Repeated pattern and market confirmation agree"]
 
     def _explain(self, **kwargs: Any) -> str:
         decision = kwargs["decision"]

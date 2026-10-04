@@ -374,7 +374,7 @@ def test_confidence_is_not_deadlocked_by_confirmation_count():
 
 
 def test_match_observation_timer_is_absolute():
-    """A configured 5-minute study clock does not delay the match. Cooldown stays absolute."""
+    """The five-minute study and cooldown both use absolute timestamps."""
     settings = Settings(
         initial_observation_seconds=300,
         reentry_cooldown_seconds=60,
@@ -393,8 +393,8 @@ def test_match_observation_timer_is_absolute():
     )
     payload = engine.dashboard_payload()
     card = payload["matches"][0]
-    assert card["observation_ends_ms"] == started
-    assert card["observation_remaining_ms"] == pytest.approx(0, abs=5)
+    assert card["observation_ends_ms"] == started + 300_000
+    assert card["observation_remaining_ms"] == pytest.approx(300_000, abs=5)
     assert "market_snapshot" not in card
     server_now = payload["server_time_ms"]
 

@@ -143,6 +143,7 @@ class KalshiWebSocketClient:
                     self.reconnect_attempts = 0
                     backoff = 1.0
                     await self._set_status(ConnectionStatus.CONNECTED)
+                    await self.send({"id": 1, "cmd": "subscribe", "params": {"channels": ["market_lifecycle_v2"]}})
                     logger.info("Kalshi WebSocket connected")
                     if self._subscribed_tickers:
                         await self.subscribe_markets(list(self._subscribed_tickers))

@@ -66,7 +66,7 @@ export default function HomePage() {
 
   const rankedMatches = useMemo(() => {
     const matches = (dashboard?.matches ?? []).filter(
-      (m) => m.is_live !== false && !/not live/i.test(m.hold_reason || "")
+      (m) => m.is_live !== false
     );
     const group: Record<string, number> = {
       STRONG_PATTERN_SIGNAL: 0,
@@ -308,15 +308,24 @@ export default function HomePage() {
       {dashboard && !featured && betSignals.length === 0 && betMatches.length === 0 && (
         <section className="mt-6 border border-white/10 bg-ink-800/40 p-8 md:p-12">
           <p className="font-display text-4xl md:text-5xl text-mist/90">
-            {dashboard.no_live_markets ? "NO LIVE TENNIS MARKETS" : "Waiting for quotes."}
+            {dashboard.no_live_markets ? "NO LIVE TENNIS MARKETS ON KALSHI" : "Waiting for quotes."}
           </p>
         </section>
       )}
 
+      {dashboard?.discovery_health && <section className="mt-8 border border-white/10 p-4 font-mono text-sm">
+        <h2>TENNIS DISCOVERY STATUS</h2>
+        <p>Kalshi Events Checked: {dashboard.discovery_health.events_checked ?? "—"} · Kalshi Markets Checked: {dashboard.discovery_health.markets_checked ?? "—"}</p>
+        <p>Tennis Markets Found: {dashboard.discovery_health.tennis_markets_found ?? "—"} · Live Tennis Matches Found: {dashboard.live_match_count}</p>
+        <p>Last Discovery Refresh: {dashboard.discovery_health.last_refresh_ms ? new Date(dashboard.discovery_health.last_refresh_ms).toISOString() : "Pending"}</p>
+        {!dashboard.discovery_health.complete && <p>Discovery incomplete — reconciliation pending</p>}
+        {dashboard.discovery_health.errors?.map(e => <p key={e}>{e}</p>)}
+      </section>}
+
       {/* Matches */}
       <section className="mt-10">
         <div className="flex items-baseline justify-between gap-3 mb-4">
-          <h2 className="font-display text-3xl">Live Matches</h2>
+          <h2 className="font-display text-3xl">LIVE TENNIS — {rankedMatches.length} MATCHES</h2>
           <span className="font-mono text-xs text-mist/50">
             {rankedMatches.length} live
           </span>
@@ -329,12 +338,11 @@ export default function HomePage() {
           </div>
         ) : dashboard.no_live_markets || rankedMatches.length === 0 ? (
           <div className="border border-dashed border-white/15 p-8 text-center font-mono text-sm text-mist/60">
-            NO LIVE TENNIS MARKETS
+            {dashboard.message || "NO LIVE TENNIS MARKETS ON KALSHI"}
           </div>
         ) : (
           <div className="grid gap-4 md:grid-cols-2">
             {rankedMatches
-              .filter((m) => !needsBet(m.display_state))
               .map((m) => (
               <MatchCard
                 key={m.market_ticker}

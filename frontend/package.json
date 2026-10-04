@@ -6,7 +6,9 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "test": "node scripts/test.cjs",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "next": "^15.2.4",
