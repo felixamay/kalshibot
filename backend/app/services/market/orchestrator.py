@@ -464,6 +464,29 @@ class MarketOrchestrator:
             except asyncio.TimeoutError:
                 pass
 
+    async def _attach_milestones(self) -> None:
+        """Stamp each market with Kalshi's match milestone. A past occurrence_datetime is not live play."""
+        now = time.time()
+        cached = getattr(self, "_milestones", None)
+        if cached is None or now - getattr(self, "_milestone_at", 0) >= 60:
+            try:
+                cached = await self.client.list_tennis_milestones()
+                self._milestone_ok = True
+            except Exception as exc:
+                logger.warning("Tennis milestones: %s", type(exc).__name__)
+                self._milestone_ok = False
+                cached = cached or {}
+            self._milestones = cached
+            self._milestone_at = now
+        for meta in self._market_meta.values():
+            row = cached.get(meta.get("event_ticker") or "")
+            if not row:
+                meta.pop("_milestone_status", None)
+                meta.pop("_milestone_start", None)
+                continue
+            meta["_milestone_status"] = row.get("status")
+            meta["_milestone_start"] = row.get("start")
+
     async def _link_scoreboard(self) -> None:
         """Reconcile all Kalshi matches independently of score-provider coverage."""
         from app.services.tennis.espn import same_match
@@ -472,11 +495,12 @@ class MarketOrchestrator:
             live = await self.tennis.list_live_matches()
         except Exception:
             live = None
-        self.engine.discovery_health["live_verification_available"] = live is not None
         live = [
             item for item in (live or [])
             if getattr(item, "source", "") != "espn" and "espn.com" not in str(getattr(item, "source_url", "") or "")
         ]
+        await self._attach_milestones()
+        self.engine.discovery_health["live_verification_available"] = live is not None or getattr(self, "_milestone_ok", False)
         groups = {}
         for ticker, meta in self._market_meta.items():
             a, b, tournament = parse_players_from_market(meta)

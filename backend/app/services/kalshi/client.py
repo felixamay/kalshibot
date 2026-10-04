@@ -274,6 +274,45 @@ class KalshiReadOnlyClient:
         logger.info("TENNIS MARKETS CLASSIFIED: %s", len(found))
         return list(found.values())
 
+    async def list_tennis_milestones(self) -> dict[str, dict[str, str]]:
+        """Event ticker to the Kalshi match milestone. Status live means the match is in progress."""
+        minimum = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 36 * 3600))
+        cursor = None
+        index: dict[str, dict[str, str]] = {}
+        for _ in range(15):
+            params: dict[str, Any] = {"limit": 200, "category": "Sports", "minimum_start_date": minimum}
+            if cursor:
+                params["cursor"] = cursor
+            data = await self.request("GET", "/milestones", params=params, authenticated=False)
+            for row in data.get("milestones") or []:
+                if "tennis" not in str(row.get("type") or ""):
+                    continue
+                details = row.get("details") or {}
+                status = str(details.get("status") or "")
+                start = str(row.get("start_date") or "")
+                tickers = [details.get("main_game_event_ticker")]
+                tickers.extend(row.get("primary_event_tickers") or [])
+                tickers.extend(row.get("related_event_tickers") or [])
+                for ticker in tickers:
+                    if not ticker:
+                        continue
+                    current = index.get(ticker)
+                    if current is None or _milestone_rank(status) > _milestone_rank(current["status"]) or (
+                        _milestone_rank(status) == _milestone_rank(current["status"]) and start > current["start"]
+                    ):
+                        index[ticker] = {"status": status, "start": start}
+            cursor = data.get("cursor")
+            if not cursor:
+                break
+            await asyncio.sleep(0.1)
+        return index
+
+
+def _milestone_rank(status: str) -> int:
+    if str(status).lower() in {"live", "inprogress", "in_progress"}:
+        return 2
+    return 1
+
 
 # Explicit guard: ensure module never defines write helpers
 assert not hasattr(KalshiReadOnlyClient, "place_order")

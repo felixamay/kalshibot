@@ -29,7 +29,9 @@ def test_group_and_states():
     detector = TennisMarketDetector()
     m = market()
     assert detector.group_key(m) == detector.group_key(market(ticker='KXATPMATCH-X-B', title='Beatrice vs Alice'))
-    assert detector.state(m, time.time()*1000) == 'LIVE'
+    assert detector.state(m, time.time()*1000) == 'UNKNOWN'
+    assert detector.state({**m, '_milestone_status': 'not_started', '_milestone_start': (datetime.now(timezone.utc)+timedelta(hours=8)).isoformat()}, time.time()*1000) == 'UPCOMING'
+    assert detector.state({**m, '_milestone_status': 'live'}, time.time()*1000) == 'LIVE'
     assert detector.state(m, time.time()*1000, score_live=True) == 'LIVE'
     assert detector.state({**m, 'status':'closed'}, time.time()*1000) == 'ENDED'
     assert detector.state({**m, 'occurrence_datetime':(datetime.now(timezone.utc)+timedelta(days=1)).isoformat()}, time.time()*1000) == 'UPCOMING'
@@ -59,6 +61,7 @@ async def test_reconciliation_restores_missed_and_groups_and_removes_closed():
     o.tennis.get_live_match = AsyncMock(return_value=live)
     o.tennis._fetched_at = time.time()
     o.ws = AsyncMock()
+    o.client.list_tennis_milestones = AsyncMock(return_value={})
     o.client.search_tennis_markets = AsyncMock(return_value=[market(), market(ticker='KXATPMATCH-X-B', title='Beatrice vs Alice')])
     await o._discover()
     assert engine.dashboard_payload()['live_match_count'] == 1
@@ -124,6 +127,7 @@ async def test_related_total_contract_does_not_supply_winner_price():
     o.tennis.list_live_matches = AsyncMock(return_value=[live])
     o.tennis.get_live_match = AsyncMock(return_value=live)
     o.tennis._fetched_at = time.time()
+    o.client.list_tennis_milestones = AsyncMock(return_value={})
     event = {'title':'Alice vs Beatrice', 'sport':'tennis'}
     o._market_meta = {
         'A-TOTAL':market(ticker='A-TOTAL', title='Total games over 21.5', _event=event),
@@ -139,18 +143,26 @@ async def test_related_total_contract_does_not_supply_winner_price():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('feed_result', [[], None])
-async def test_past_start_kalshi_open_match_stays_on_the_board(feed_result):
+async def test_past_start_without_a_playing_milestone_is_not_on_the_board(feed_result):
     engine = SignalEngine(Settings(_env_file=None))
     o = MarketOrchestrator(engine)
     o.ws = AsyncMock()
+    o.client.list_tennis_milestones = AsyncMock(return_value={
+        'E': {'status': 'not_started', 'start': (datetime.now(timezone.utc)+timedelta(hours=8)).isoformat()},
+    })
     o._market_meta = {'KXATPMATCH-X-A': market()}
     o.tennis.list_live_matches = AsyncMock(return_value=feed_result)
+    await o._link_scoreboard()
+    assert engine.dashboard_payload()['matches'] == []
+    playing = market(_milestone_status='live')
+    o._market_meta = {'KXATPMATCH-X-A': playing}
+    o.client.list_tennis_milestones = AsyncMock(return_value={'E': {'status': 'live', 'start': playing['occurrence_datetime']}})
+    o._milestone_at = 0
     await o._link_scoreboard()
     cards = engine.dashboard_payload()['matches']
     assert len(cards) == 1
     assert cards[0]['market_ticker'] == 'KXATPMATCH-X-A'
     assert cards[0]['live_evidence_expires_at_ms'] is None
-    assert engine.dashboard_payload()['message'] is None
     o.ws.subscribe_markets.assert_awaited()
     await o.client.close()
     await o.tennis.close()

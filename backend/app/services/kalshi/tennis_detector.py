@@ -100,16 +100,31 @@ class TennisMarketDetector:
                     return 'ENDED'
             except ValueError:
                 pass
-        start = self.start_ms(market)
-        if score_live or market.get('is_live') is True or status == 'live':
+        milestone = str(market.get('_milestone_status') or '').lower()
+        start = self._milestone_start_ms(market) or self.start_ms(market)
+        # occurrence_datetime is the trading day, not the first ball.
+        # Only a milestone that Kalshi marks in progress is a live match.
+        if milestone in {'not_started', 'scheduled', 'sch', 'created'}:
+            if start is not None and start > now_ms:
+                return 'STARTING' if start - now_ms <= 300000 else 'UPCOMING'
+            return 'UPCOMING'
+        if milestone in {'p', 'closed', 'cancelled', 'wov', 'ctc', 'pc', 'ended', 'finished', 'complete', 'completed'}:
+            return 'ENDED'
+        if milestone in {'live', 'inprogress', 'in_progress'} or score_live or market.get('is_live') is True or status == 'live':
             return 'LIVE'
         if start is not None and start > now_ms:
             return 'STARTING' if start - now_ms <= 300000 else 'UPCOMING'
-        # Open after the scheduled start is a live Kalshi match even when the
-        # score feed has not confirmed it. A missing start stays UNKNOWN.
-        if start is not None and start <= now_ms:
-            return 'LIVE'
         return 'UNKNOWN'
+
+    def _milestone_start_ms(self, market):
+        value = market.get('_milestone_start')
+        if not value:
+            return None
+        try:
+            dt = datetime.fromisoformat(str(value).replace('Z', '+00:00'))
+            return dt.replace(tzinfo=dt.tzinfo or timezone.utc).timestamp() * 1000
+        except ValueError:
+            return None
 
     def group_key(self, market):
         a, b = self.players(market)
