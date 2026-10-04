@@ -334,7 +334,7 @@ export default function HomePage() {
         <p>Tennis Markets Found: {dashboard.discovery_health.tennis_markets_found ?? "—"} · Live Tennis Matches Found: {dashboard.live_match_count}</p>
         <p>Kalshi live matches found: {dashboard.discovery_health.kalshi_live_matches_found ?? dashboard.live_match_count}</p>
         <p>WebSocket markets subscribed: {dashboard.discovery_health.ws_markets_subscribed ?? "—"}</p>
-        <p>GPT browser connected: {dashboard.discovery_health.gpt_browser_connected ?? "NO"}</p>
+        <p>GPT browser connected: {dashboard.discovery_health.gpt_browser_connected === "YES" ? "YES" : `NO${dashboard.discovery_health.gpt_browser_error ? ` — ${dashboard.discovery_health.gpt_browser_error}` : ""}`}</p>
         <p>GPT currently viewing: {dashboard.discovery_health.gpt_viewing ?? "—"}</p>
         <p>Service games counted: {dashboard.discovery_health.service_games_counted ?? "0/2"}</p>
         <p>Last GPT analysis time: {dashboard.discovery_health.last_gpt_analysis_ms ? new Date(dashboard.discovery_health.last_gpt_analysis_ms).toISOString() : "—"}</p>

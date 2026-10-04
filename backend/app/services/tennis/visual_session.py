@@ -284,10 +284,17 @@ class KalshiVisualSession:
         self._page_text = ""
         self._screenshot = ""
         self._cursor = 0
+        from app.services.tennis.openai_browser import OpenAIHostedBrowser
+        self.hosted = OpenAIHostedBrowser(settings)
 
     def diagnostics(self) -> dict:
+        status = self.hosted.public_status()
+        self.gpt_connected = status["connected"]
+        if not status["connected"] and status.get("error"):
+            self.reason = status["error"]
         return {
-            "gpt_browser_connected": "YES" if self.gpt_connected else "NO",
+            "gpt_browser_connected": "YES" if status["connected"] else "NO",
+            "gpt_browser_error": status.get("error"),
             "gpt_viewing": self.viewing or "—",
             "service_games_counted": self.counter.label,
             "last_gpt_analysis_ms": self.last_analysis_ms,
@@ -299,6 +306,7 @@ class KalshiVisualSession:
         if not getattr(self.settings, "openai_api_key", ""):
             self.gpt_connected = False
             self.reason = "OPENAI_API_KEY is not configured"
+        hosted = asyncio.create_task(self.hosted.start())
         try:
             await self._launch_browser()
             await self._navigate("https://kalshi.com/")
@@ -307,10 +315,15 @@ class KalshiVisualSession:
                 self.viewing = "kalshi.com"
         except Exception as exc:
             self.browser_open = False
-            self.gpt_connected = False
-            self.reason = f"Kalshi browser did not start: {type(exc).__name__}"
-            self.no_signal_reason = self.reason
             logger.warning("Kalshi visual browser: %s", type(exc).__name__)
+        try:
+            await hosted
+        except Exception as exc:
+            logger.warning("OpenAI browser: %s", type(exc).__name__)
+        status = self.hosted.public_status()
+        self.gpt_connected = status["connected"]
+        if not status["connected"]:
+            self.reason = status.get("error") or self.reason
 
     async def stop(self) -> None:
         self._stop.set()
@@ -328,6 +341,10 @@ class KalshiVisualSession:
                 self._proc.kill()
         self.browser_open = False
         self.gpt_connected = False
+        try:
+            await self.hosted.aclose()
+        except Exception:
+            pass
 
     async def watch(self, matches) -> None:
         if not matches:
