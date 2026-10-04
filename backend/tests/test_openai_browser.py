@@ -96,6 +96,24 @@ def test_trading_controls_are_never_activated():
     assert "click" not in blob
 
 
+@pytest.mark.asyncio
+async def test_public_kalshi_page_counts_even_if_sign_in_is_declined(tmp_path):
+    hosted = browser(tmp_path)
+    await hosted._handle_event({
+        "type": "agent.session.turn.output_text.done",
+        "text": "I’ll open Kalshi and check whether tennis markets are visible, without interacting with trading controls.",
+    })
+    assert hosted.kalshi_loaded is False
+    await hosted._handle_event({
+        "type": "agent.session.turn.output_text.done",
+        "text": "Yes. https://kalshi.com/category/sports contains tennis markets. An account prompt appeared, so authentication is required to continue. I did not interact with trading controls.",
+    })
+    finished = await hosted._handle_event({"type": "agent.session.turn.completed", "turn": {"subagent_id": None}})
+    assert finished is True
+    assert hosted.kalshi_loaded is True
+    assert hosted.error is None
+
+
 def test_status_hides_the_session_id(tmp_path):
     hosted = browser(tmp_path)
     hosted.session_id = "sess_secret"

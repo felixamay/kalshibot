@@ -16,7 +16,6 @@ logger = logging.getLogger(__name__)
 
 _SESSION_FILE = Path("/tmp/courtedg-openai-browser-session.json")
 _MODEL = "gpt-6-astra"
-_ALLOWED_ORIGINS = ("https://kalshi.com", "https://www.kalshi.com")
 _TRADE_WORDS = ("buy", "sell", "submit", "place order", "confirm order", "confirm trade")
 VERIFICATION_TASK = (
     "Open Kalshi and identify whether the page contains tennis markets. "
@@ -55,8 +54,11 @@ def user_message(text: str) -> dict:
 
 
 def origin_allowed(origin: str) -> bool:
-    value = (origin or "").strip().rstrip("/")
-    return value in _ALLOWED_ORIGINS or value.startswith(tuple(f"{item}/" for item in _ALLOWED_ORIGINS))
+    value = (origin or "").strip()
+    if not value.startswith("https://"):
+        return False
+    host = value.split("/", 3)[2].split(":")[0].lower()
+    return host == "kalshi.com" or host.endswith(".kalshi.com")
 
 
 def approval_event(request: dict, request_id: str) -> dict | None:
@@ -118,7 +120,7 @@ class HttpxBrowserTransport:
     def __init__(self, api_key: str) -> None:
         self._client = httpx.AsyncClient(
             base_url="https://api.openai.com",
-            timeout=httpx.Timeout(120.0, connect=20.0),
+            timeout=httpx.Timeout(240.0, connect=20.0),
         )
         self._headers = {
             "Authorization": f"Bearer {api_key}",
@@ -300,7 +302,7 @@ class OpenAIHostedBrowser:
             await self._post_events([user_message(VERIFICATION_TASK)])
             finished = False
             while not finished:
-                event = await asyncio.wait_for(queue.get(), timeout=110)
+                event = await asyncio.wait_for(queue.get(), timeout=210)
                 if event is None:
                     break
                 finished = await self._handle_event(event)
@@ -331,21 +333,14 @@ class OpenAIHostedBrowser:
                 await self._drain_approvals(payload)
             return False
         if kind == "agent.session.turn.output_text.done":
-            text = str(event.get("text") or "")
-            self.last_successful_observation = text[:500]
-            lowered = text.casefold()
-            if "authentication is required" in lowered or "sign in" in lowered or "log in" in lowered:
-                self.kalshi_loaded = False
-                self.error = "Kalshi requested authentication; staying on public read-only access"
-                return False
-            if "kalshi" in lowered or "tennis" in lowered:
-                self.kalshi_loaded = True
-                self._write()
-                logger.info("KALSHI PAGE LOADED")
+            self.last_successful_observation = str(event.get("text") or "")[:500]
             return False
         if kind == "agent.session.turn.completed":
             turn = event.get("turn") or {}
-            return turn.get("subagent_id") is None
+            if turn.get("subagent_id") is not None:
+                return False
+            self._commit_observation()
+            return True
         if kind in {"agent.session.turn.failed", "agent.session.turn.cancelled"}:
             turn = event.get("turn") or {}
             if turn.get("subagent_id") is None:
@@ -357,6 +352,27 @@ class OpenAIHostedBrowser:
             self.error = str(message or kind)
             raise RuntimeError(self.error)
         return False
+
+    def _commit_observation(self) -> None:
+        text = self.last_successful_observation or ""
+        lowered = text.casefold()
+        blocked = any(phrase in lowered for phrase in (
+            "authentication is required",
+            "must sign in",
+            "must log in",
+            "login required",
+            "sign-in required",
+        ))
+        saw_page = "kalshi.com" in lowered or "contains tennis" in lowered or "sports page" in lowered
+        if saw_page:
+            self.kalshi_loaded = True
+            self.error = None
+            self._write()
+            logger.info("KALSHI PAGE LOADED")
+            return
+        if blocked:
+            self.kalshi_loaded = False
+            self.error = "Kalshi requested authentication; staying on public read-only access"
 
     async def _drain_approvals(self, payload: dict) -> None:
         for approval in payload.get("required_actions") or []:
