@@ -30,7 +30,7 @@ _MIN_POLL_SECONDS = 900.0
 _DEFAULT_BASE = "https://api.livetennisapi.com/api/public/v1"
 # A restart during a rate limit used to forget the match that was already live.
 _SLATE_FILE = Path("/tmp/courtedg-livetennis-slate.json")
-_SLATE_MAX_AGE_SECONDS = 3 * 60 * 60
+_SLATE_MAX_AGE_SECONDS = 30 * 60
 
 
 @dataclass

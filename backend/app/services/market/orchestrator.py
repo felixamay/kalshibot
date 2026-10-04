@@ -88,7 +88,7 @@ def _kalshi_match_is_trading(market: dict[str, Any], now: float) -> bool:
         return False
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
-    return (now - dt.timestamp()) <= 30 * 60
+    return (now - dt.timestamp()) <= 2 * 60 * 60
 
 
 def occurrence_start_ms(market: dict[str, Any]) -> Optional[float]:
@@ -517,6 +517,9 @@ class MarketOrchestrator:
             if ticker not in linked:
                 ctx.score_confirmed = False
                 ctx.tennis = None
+        if not linked:
+            await self._link_traded_kalshi_matches()
+            return
         if linked and linked != self._linked_tickers and self.ws:
             await self.ws.subscribe_markets(sorted(linked))
         self._linked_tickers = linked

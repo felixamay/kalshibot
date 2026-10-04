@@ -234,6 +234,7 @@ def test_a_kalshi_match_that_just_traded_is_treated_as_live():
         {"last_price_dollars": "0.29", "updated_time": "1970-01-01T00:00:00+00:00"},
         now,
     )
+    # Two hours is still the same match. A day-old quote is not.
     assert not _kalshi_match_is_trading(
         {"last_price_dollars": "0", "updated_time": "1970-01-12T13:46:10+00:00"},
         now,
