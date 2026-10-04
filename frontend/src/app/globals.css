@@ -1,0 +1,54 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: #07110d;
+  --foreground: #e8f2ec;
+  --panel: rgba(19, 38, 30, 0.72);
+  --line: rgba(215, 228, 220, 0.12);
+  --lime: #b8f000;
+  --amber: #ffb020;
+  --coral: #ff5c4d;
+  --mint: #3dd6c6;
+}
+
+html,
+body {
+  min-height: 100%;
+}
+
+body {
+  color: var(--foreground);
+  background:
+    radial-gradient(1200px 600px at 10% -10%, rgba(184, 240, 0, 0.08), transparent 55%),
+    radial-gradient(900px 500px at 90% 0%, rgba(61, 214, 198, 0.08), transparent 50%),
+    linear-gradient(180deg, #0a1611 0%, #07110d 40%, #0c1a14 100%);
+  font-family: var(--font-body), sans-serif;
+}
+
+/* Court line texture */
+body::before {
+  content: "";
+  pointer-events: none;
+  position: fixed;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(215, 228, 220, 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(215, 228, 220, 0.03) 1px, transparent 1px);
+  background-size: 48px 48px;
+  mask-image: radial-gradient(ellipse at center, black 20%, transparent 75%);
+  z-index: 0;
+}
+
+#__next,
+main {
+  position: relative;
+  z-index: 1;
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+}

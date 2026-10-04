@@ -1,0 +1,172 @@
+"""ESPN scoreboard parsing and the live-match link."""
+
+from __future__ import annotations
+
+import time
+
+from app.services.market.orchestrator import parse_players_from_market
+from app.services.signals.engine import SignalEngine, match_is_live
+from app.services.tennis.espn import (
+    EspnLiveMatch,
+    parse_scoreboard,
+    same_match,
+    state_for_players,
+)
+from tests.test_patterns import settings
+
+
+def test_matchup_keeps_both_words_before_vs():
+    yes, opponent, _match = parse_players_from_market(
+        {
+            "yes_sub_title": "Matthew William Donald",
+            "title": "Matthew William Donald wins",
+            "rules_primary": (
+                "If Matthew William Donald wins the Martin Manzano vs Donald "
+                "professional tennis match, the market resolves."
+            ),
+        }
+    )
+    assert yes == "Matthew William Donald"
+    assert opponent == "Martin Manzano"
+
+
+def test_doubles_matchup_keeps_both_teams():
+    yes, opponent, _match = parse_players_from_market(
+        {
+            "yes_sub_title": "Pearce / Yamakita",
+            "title": "Pearce / Yamakita wins",
+            "rules_primary": (
+                "If Pearce / Yamakita wins the Pearce / Yamakita vs Kamper / Kruger "
+                "professional tennis match, the market resolves."
+            ),
+        }
+    )
+    assert yes == "Pearce / Yamakita"
+    assert opponent == "Kamper / Kruger"
+    assert same_match(
+        "Pearce / Yamakita",
+        "Kamper / Kruger",
+        "Erin Pearce / Mia Yamakita",
+        "Emma Malmkjaer Kamper / Isabella Kruger",
+    )
+    assert same_match(
+        "Luis Guto Miguel / Eduardo Ribeiro",
+        "Mariano Kestelboim / Marcelo Zormann",
+        "Eduardo Ribeiro / Luis Felipe Miguel",
+        "Marcelo Zormann / Mariano Kestelboim",
+    )
+
+
+def test_same_players_match_in_either_order():
+    assert same_match("Elena Rybakina", "Alina Charaeva", "Alina Charaeva", "Elena Rybakina")
+    assert not same_match("Elena Rybakina", "Alina Charaeva", "Lois Boisson", "Erika Andreeva")
+    assert same_match("Clement Chidekh", "Henry Bernet", "Chidekh, Clement", "Bernet, Henry")
+    assert same_match(
+        "Juan Cruz Martin Manzano",
+        "Matthew William Donald",
+        "Martin, Juan",
+        "Donald, Matthew William",
+    )
+    assert same_match(
+        "Matthew William Donald",
+        "Martin Manzano",
+        "Juan Martin",
+        "Matthew William Donald",
+    )
+
+
+def test_only_in_progress_matches_are_parsed_and_the_score_follows_the_yes_player():
+    payload = {
+        "events": [
+            {
+                "shortName": "China Open",
+                "groupings": [
+                    {
+                        "competitions": [
+                            {
+                                "id": "1",
+                                "status": {"type": {"state": "post", "name": "STATUS_FINAL", "detail": "Final"}},
+                                "competitors": [
+                                    {"athlete": {"displayName": "Iga Swiatek"}, "linescores": [{"value": 6}]},
+                                    {"athlete": {"displayName": "Aryna Sabalenka"}, "linescores": [{"value": 4}]},
+                                ],
+                            },
+                            {
+                                "id": "184323",
+                                "status": {
+                                    "type": {"state": "in", "name": "STATUS_IN_PROGRESS", "detail": "2nd Set"}
+                                },
+                                "competitors": [
+                                    {
+                                        "athlete": {"displayName": "Alina Charaeva"},
+                                        "linescores": [{"value": 3}, {"value": 5}],
+                                    },
+                                    {
+                                        "athlete": {"displayName": "Elena Rybakina"},
+                                        "possession": True,
+                                        "linescores": [{"value": 6}, {"value": 4}],
+                                    },
+                                ],
+                            },
+                        ]
+                    }
+                ],
+            }
+        ]
+    }
+    live = parse_scoreboard(payload)
+    assert [match.match_id for match in live] == ["184323"]
+    state = state_for_players(live[0], "Elena Rybakina", "Alina Charaeva")
+    assert state.available is True
+    assert state.source == "espn"
+    assert state.set_score == "6-3 4-5"
+    assert state.match_score == "1-0"
+    assert state.game_score == "4-5"
+    assert state.server == "A"
+    assert state.source_url == "https://www.espn.com/tennis/match/_/id/184323"
+
+
+def test_a_confirmed_score_overrides_a_stale_kalshi_start():
+    engine = SignalEngine(settings())
+    now = time.time() * 1000.0
+    engine.register_match(
+        match_id="old",
+        player_a="Elena Rybakina",
+        player_b="Alina Charaeva",
+        tournament="China Open",
+        market_ticker="KXOLD",
+        market_db_id="1",
+        now_ms=now,
+        scheduled_start_ms=now - 32 * 60 * 60 * 1000,
+    )
+    engine.register_match(
+        match_id="soon",
+        player_a="Tomorrow",
+        player_b="Player",
+        tournament="China Open",
+        market_ticker="KXSOON",
+        market_db_id="2",
+        now_ms=now,
+        scheduled_start_ms=now - 60_000,
+    )
+    engine.snap.matches["KXOLD"].score_confirmed = True
+    engine.snap.matches["KXSOON"].score_confirmed = False
+    assert match_is_live(engine.snap.matches["KXOLD"], now) is True
+    assert match_is_live(engine.snap.matches["KXSOON"], now) is False
+    payload = engine.dashboard_payload()
+    assert [card["market_ticker"] for card in payload["matches"]] == ["KXOLD"]
+
+
+def test_state_for_players_keeps_orientation():
+    match = EspnLiveMatch(
+        match_id="9",
+        player_a="Lois Boisson",
+        player_b="Erika Andreeva",
+        tournament="Adana",
+        detail="3rd Set",
+        sets=[(6, 3), (4, 6), (0, 0)],
+        source_url="https://www.espn.com/tennis/match/_/id/9",
+    )
+    state = state_for_players(match, "Erika Andreeva", "Lois Boisson")
+    assert state.set_score == "3-6 6-4 0-0"
+    assert state.match_score == "1-1"

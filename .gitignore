@@ -1,0 +1,27 @@
+# Environment / secrets
+.env
+.env.local
+secrets/
+*.pem
+
+# Python
+backend/.venv/
+backend/**/__pycache__/
+backend/**/*.pyc
+backend/.pytest_cache/
+backend/kalshi.db
+backend/*.db
+
+# Node
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+
+# OS / IDE
+.DS_Store
+.idea/
+.vscode/
+*.log
+
+# Artifacts
+/opt/cursor/artifacts/
