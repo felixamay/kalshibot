@@ -259,6 +259,93 @@ def test_three_successes_stay_blocked_when_the_setup_is_invalid():
     assert any("stale" in item.lower() for item in blockers)
 
 
+@pytest.mark.asyncio
+async def test_eighty_percent_observed_success_is_suggested_despite_unreliable_game_check():
+    """A qualifying success rate is shown as a bet even when the game-win check says wait."""
+    s = settings()
+    engine = SignalEngine(s)
+    engine.snap.connection_status = ConnectionStatus.CONNECTED
+    now = time.time() * 1000.0
+    ctx = engine.register_match(
+        match_id="lac",
+        player_a="Adelina Lachinova",
+        player_b="Alana Smith",
+        tournament="WTA Challenger",
+        market_ticker="KXTEST",
+        market_db_id="mk1",
+        now_ms=now,
+        scheduled_start_ms=now - 60_000,
+    )
+    ctx.score_confirmed = True
+    from app.services.tennis.provider import TennisLiveState
+
+    ctx.tennis = TennisLiveState(
+        "live",
+        "Adelina Lachinova",
+        "Alana Smith",
+        available=True,
+        game_score="1-4",
+        match_score="6-3",
+    )
+    ctx.latest_reasoning = {
+        "reliable": False,
+        "pattern_type": "PULLBACK_RECOVERY",
+        "pattern_confidence": 51.0,
+        "entry_score": 0.0,
+        "reason": "NO RELIABLE PATTERN — WAIT",
+        "block_id": "block",
+        "confirmation_count": 0,
+    }
+
+    def fake_estimate(**kwargs):
+        return ProbabilityResult(
+            player="Adelina Lachinova",
+            direction="YES",
+            model_win_probability=0.55,
+            executable_market_probability=0.5,
+            raw_edge=0.05,
+            estimated_net_edge=0.04,
+            source="tennis_enhanced",
+        )
+
+    engine.prob_model.estimate = fake_estimate  # type: ignore[method-assign]
+
+    def assess(*_args, **_kwargs):
+        return PatternAssessment(
+            decision="PATTERN_ENTRY_SIGNAL",
+            pattern_type="PULLBACK_RECOVERY",
+            pattern_name="Pullback + Recovery",
+            player="Adelina Lachinova",
+            player_side="YES",
+            successes=4,
+            success_rate=0.80,
+            confidence=67,
+            entry_score=63,
+            stage="EARLY",
+            progress=10,
+            maximum_entry_price=5,
+            entry_zone_low=2,
+            entry_zone_high=4,
+            explanation="Observed success 80% observed. Bet YES on Adelina Lachinova now.",
+            tradeable=True,
+        )
+
+    engine._assess_pattern = assess  # type: ignore[method-assign]
+    await engine.on_market_update(
+        "KXTEST",
+        yes_bid=3,
+        yes_ask=4,
+        depth_yes=3000,
+        depth_no=3000,
+        imbalance=-0.2,
+        status="OPEN",
+    )
+    assert ctx.display_state == SignalType.PATTERN_ENTRY_SIGNAL
+    emitted = [sig for sig in engine.snap.signals.values() if sig.is_actionable()]
+    assert emitted, ctx.hold_reason
+    assert emitted[0].player == "Adelina Lachinova"
+
+
 def test_occurrence_time_is_the_match_start():
     assert occurrence_start_ms({}) is None
     assert occurrence_start_ms({"occurrence_datetime": ""}) is None
