@@ -172,7 +172,7 @@ def match_is_live(ctx: MatchContext, now_ms: float) -> bool:
 
 @dataclass
 class EngineSnapshot:
-    connection_status: ConnectionStatus = ConnectionStatus.DISCONNECTED
+    connection_status: ConnectionStatus = ConnectionStatus.CONNECTED
     matches: dict[str, MatchContext] = field(default_factory=dict)
     analyzers: dict[str, RollingMarketAnalyzer] = field(default_factory=dict)
     signals: dict[str, LiveSignal] = field(default_factory=dict)

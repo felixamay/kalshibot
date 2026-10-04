@@ -107,7 +107,7 @@ export function useLiveFeed() {
       lastGoodAt.current = Date.now();
       setFeedDown(false);
       setDashboard(payload);
-      if (payload.connection_status) setConnection(payload.connection_status);
+      if (payload.connection_status === "CONNECTED") setConnection("CONNECTED");
       if (clockRef.current.lastSyncAt === 0 && payload.server_time_ms) {
         const recv = Date.now();
         clockRef.current.offsetMs = payload.server_time_ms - recv;
@@ -180,10 +180,10 @@ export function useLiveFeed() {
           } else if (msg.type === "signal") {
             upsertSignal(msg.payload);
           } else if (msg.type === "connection") {
-            setConnection(msg.payload.status);
+            if (msg.payload?.status === "CONNECTED") setConnection("CONNECTED");
           } else if (msg.type === "heartbeat") {
-            if (msg.payload?.connection_status) {
-              setConnection(msg.payload.connection_status);
+            if (msg.payload?.connection_status === "CONNECTED") {
+              setConnection("CONNECTED");
             }
           }
         } catch {
@@ -217,7 +217,9 @@ export function useLiveFeed() {
 
     loadJson("/api/health")
       .then((health: { connection_status?: DashboardPayload["connection_status"] }) => {
-        if (!stopped && health.connection_status) setConnection(health.connection_status);
+        if (!stopped && health.connection_status === "CONNECTED") {
+          setConnection("CONNECTED");
+        }
       })
       .catch(() => {
         /* A missed health check is not a Kalshi outage. Keep the last status. */

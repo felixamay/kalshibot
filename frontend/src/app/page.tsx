@@ -50,8 +50,7 @@ function useRotatingBet(signals: LiveSignal[]): LiveSignal | null {
 }
 
 export default function HomePage() {
-  const { dashboard, signals, connection, wsState, feedDown, serverNow, apiUrl } =
-    useLiveFeed();
+  const { dashboard, signals, feedDown, serverNow, apiUrl } = useLiveFeed();
   const [alertsEnabled, setAlertsEnabled] = useState(true);
   // Start empty. A useState initializer runs on the server and is not re-run
   // on hydration, so a saved token would be ignored in every new tab.
@@ -217,7 +216,7 @@ export default function HomePage() {
           </p>
         </div>
         <div className="space-y-3 text-right">
-          <ConnectionBadge kalshi={connection} ws={wsState} />
+          <ConnectionBadge />
           <div className="flex flex-wrap justify-end gap-2">
             <button
               type="button"
