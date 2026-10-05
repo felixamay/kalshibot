@@ -119,18 +119,7 @@ export function MatchCard({
       </div>
 
       <TennisPointPanel match={match} />
-      <section className="mt-4 border border-white/10 p-3 text-sm" aria-label="AI pattern analysis">
-        <p className="font-semibold">AI PATTERN ANALYSIS</p>
-        <p>AI MODEL: {match.ai_pattern_analysis?.model === "gpt-6-luna" ? "GPT-6 Luna" : match.ai_pattern_analysis?.model === "gpt-6.1-sol" ? "GPT-6.1 Sol" : match.ai_pattern_analysis?.model ?? "Pending"}</p>
-        <p>{match.ai_pattern_analysis?.message ?? match.ai_pattern_analysis?.status ?? "Waiting for two completed service games"}</p>
-        {match.ai_pattern_analysis?.output && <>
-          <p>Detected Pattern: {match.ai_pattern_analysis.output.pattern_name.replaceAll("_", " ")}</p>
-          <p>Favored: {match.ai_pattern_analysis.output.favored_side === "PLAYER_A" ? match.player_a : match.ai_pattern_analysis.output.favored_side === "PLAYER_B" ? match.player_b : "Neither"}</p>
-          <p>Pattern Confidence: {match.ai_pattern_analysis.output.pattern_confidence} · Stage: {match.ai_pattern_analysis.output.pattern_stage}</p>
-          <p>AI View: {match.ai_pattern_analysis.output.recommendation.replaceAll("_", " ")} ({match.ai_pattern_analysis.status})</p>
-          <p>{match.ai_pattern_analysis.output.reasons.join(" · ")}</p>
-          <p className="text-mist/60">{match.ai_pattern_analysis.output.risks.join(" · ")}</p>
-        </>}
+      <section className="mt-4 border border-white/10 p-3 text-sm" aria-label="Kalshi pattern analysis">
         {match.hybrid_decision?.signal?.final === "YES" && (
           <div className="mt-3 border border-signal-lime/50 p-3">
             <p className="font-display text-3xl text-signal-lime">YES — {match.hybrid_decision.signal.player_name}</p>
@@ -141,12 +130,6 @@ export function MatchCard({
         )}
         {match.hybrid_decision?.signal && (
           <div className="mt-3">
-            <p>GPT VISUAL ANALYSIS:</p>
-            {match.hybrid_decision.signal.message === "GPT ANALYSIS STALE" ? <p>GPT ANALYSIS STALE</p> : <>
-              <p>{match.hybrid_decision.signal.gpt_visual?.pattern || "—"}</p>
-              <p>Favors {match.hybrid_decision.signal.gpt_visual?.favors || "—"}</p>
-              <p>Confidence {match.hybrid_decision.signal.gpt_visual?.confidence ?? "—"}</p>
-            </>}
             <p>KALSHI LIVE ANALYSIS:</p>
             <p>{match.hybrid_decision.signal.kalshi_live?.bias || "—"}</p>
             <p>Bid Pressure {match.hybrid_decision.signal.kalshi_live?.bid_pressure_pct ?? "—"}%</p>

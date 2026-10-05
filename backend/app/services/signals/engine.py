@@ -361,35 +361,10 @@ class SignalEngine:
             ctx.reasoning_history.append(reasoning)
             ctx.last_pattern_serve = ctx.serves_seen
             await self._persist_block(ctx, block, reasoning)
-            self.schedule_ai_analysis(ctx, block, market)
 
     def schedule_ai_analysis(self, ctx, block, market, deep=False):
-        from app.services.signals.ai_patterns import build_snapshot
-        if block.invalidated or len(block.games) != 2 or market.data_age_ms > self.settings.max_data_age_ms:
-            return False
-        if not self.settings.openai_api_key:
-            ctx.ai_analysis = {"status": "UNAVAILABLE", "message": "OPENAI_API_KEY is not configured"}
-            return False
-        if deep and ctx.ai_task and not ctx.ai_task.done():
-            return False
-        if ctx.ai_task and not ctx.ai_task.done():
-            ctx.ai_task.cancel()
-        try:
-            snapshot = build_snapshot(ctx, block, market, self.snap.analyzers[ctx.market_ticker], self.settings)
-        except Exception:
-            logger.exception("Could not build AI feature snapshot")
-            ctx.ai_analysis = {"status": "UNAVAILABLE", "message": "AI ANALYSIS TEMPORARILY UNAVAILABLE"}
-            return False
-        snapshot['deep_requested'] = deep
-        ctx.ai_request_id = snapshot['analysis_request_id']
-        ctx.ai_analysis = {"status": "PENDING", "message": "Analyzing completed ServeBlock"}
-        from app.services.signals.ai_patterns import note_gpt_analysis_call
-        note_gpt_analysis_call()
-        task = asyncio.create_task(self._run_ai(ctx, block, snapshot, deep))
-        ctx.ai_task = task
-        self.ai_tasks.add(task)
-        task.add_done_callback(self.ai_tasks.discard)
-        return True
+        """Pattern advice uses Kalshi prices. This does not call the OpenAI API."""
+        return False
 
     def _ai_is_fresh(self, ctx, snapshot):
         market = self.snap.analyzers[ctx.market_ticker].state

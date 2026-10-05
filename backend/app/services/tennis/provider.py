@@ -188,6 +188,6 @@ class HttpTennisProvider(TennisDataProvider):
 
 
 def create_tennis_provider(settings: Settings | None = None) -> TennisDataProvider:
-    """Scores come from the ChatGPT browser view of Kalshi. No other score API is called."""
+    """Live prices come from Kalshi. This factory does not call a score API."""
     del settings
     return NullTennisProvider()

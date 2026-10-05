@@ -10,7 +10,6 @@ from typing import Optional
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.gpt_browser import router as gpt_browser_router
 from app.api.routes import router
 from app.api.strategy_routes import router as strategy_router
 from app.config import get_settings
@@ -98,7 +97,6 @@ async def do_not_cache_api(request, call_next):
     return response
 
 app.include_router(router, prefix="/api")
-app.include_router(gpt_browser_router, prefix="/api")
 app.include_router(strategy_router, prefix="/api")
 
 

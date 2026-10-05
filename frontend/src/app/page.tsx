@@ -333,12 +333,6 @@ export default function HomePage() {
         <p>Tennis Markets Found: {dashboard.discovery_health.tennis_markets_found ?? "—"} · Live Tennis Matches Found: {dashboard.live_match_count}</p>
         <p>Kalshi live matches found: {dashboard.discovery_health.kalshi_live_matches_found ?? dashboard.live_match_count}</p>
         <p>WebSocket markets subscribed: {dashboard.discovery_health.ws_markets_subscribed ?? "—"}</p>
-        <p>GPT browser connected: {dashboard.discovery_health.gpt_browser_connected === "YES" ? "YES" : `NO${dashboard.discovery_health.gpt_browser_error ? ` — ${dashboard.discovery_health.gpt_browser_error}` : ""}`}</p>
-        <p>GPT currently viewing: {dashboard.discovery_health.gpt_viewing ?? "—"}</p>
-        <p>Service games counted: {dashboard.discovery_health.service_games_counted ?? "0/2"}</p>
-        <p>Last GPT analysis time: {dashboard.discovery_health.last_gpt_analysis_ms ? new Date(dashboard.discovery_health.last_gpt_analysis_ms).toISOString() : "—"}</p>
-        <p>Last pattern result: {dashboard.discovery_health.last_pattern_result ?? "WAIT"}</p>
-        <p>Reason no signal was produced: {dashboard.discovery_health.no_signal_reason ?? "Waiting for two completed service games"}</p>
         <p>Last Discovery Refresh: {dashboard.discovery_health.last_refresh_ms ? new Date(dashboard.discovery_health.last_refresh_ms).toISOString() : "Pending"}</p>
         {!dashboard.discovery_health.complete && <p>Discovery incomplete — reconciliation pending</p>}
         {dashboard.discovery_health.errors?.map(e => <p key={e}>{e}</p>)}

@@ -460,8 +460,8 @@ class OpenAIHostedBrowser:
 
     def _transport(self):
         if self.transport is None:
-            self.transport = HttpxBrowserTransport(self.settings.openai_api_key)
-            self._owns_transport = True
+            self.error = "GPT browser is disabled"
+            raise RuntimeError("GPT browser is disabled")
         return self.transport
 
     def _load(self) -> None:
