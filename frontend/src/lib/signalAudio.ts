@@ -186,6 +186,39 @@ function pulseVibration(warning: boolean) {
   }
 }
 
+/** BUY rises, SELL falls, STRONG BUY adds a third tone, STOP LOSS uses the low buzz. */
+export function playStrategySound(kind: string): boolean {
+  const normalized = kind.toUpperCase();
+  if (!context || context.state !== "running") {
+    const sounded = playHtmlAlert();
+    if (sounded) pulseVibration(normalized.includes("STOP"));
+    return sounded;
+  }
+  if (normalized.includes("STOP")) {
+    tone(90, 0, 0.28, "square");
+    tone(220, 0.08, 0.24);
+    pulseVibration(true);
+    return true;
+  }
+  if (normalized.startsWith("SELL")) {
+    tone(520, 0, 0.16);
+    tone(330, 0.14, 0.22);
+    pulseVibration(false);
+    return true;
+  }
+  if (normalized.includes("STRONG")) {
+    tone(880, 0, 0.12);
+    tone(1175, 0.1, 0.12);
+    tone(1568, 0.2, 0.16);
+    pulseVibration(false);
+    return true;
+  }
+  tone(660, 0, 0.14);
+  tone(880, 0.12, 0.16);
+  pulseVibration(false);
+  return true;
+}
+
 export function playSignalAudio(id: string, warning = false): boolean {
   const heard = warning ? warnings : entries;
   if (heard.has(id)) return false;

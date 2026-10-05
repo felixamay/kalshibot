@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { ALERT_COOLDOWN_MS, considerStrategyAlert, considerYesAlert, enableSignalAudio, playSignalAudio, resetSignalPlayback, resetStrategyAlerts, resetYesAlerts, signalAlertKey } from './signalAudio';
+import { ALERT_COOLDOWN_MS, considerStrategyAlert, considerYesAlert, enableSignalAudio, playSignalAudio, playStrategySound, resetSignalPlayback, resetStrategyAlerts, resetYesAlerts, signalAlertKey } from './signalAudio';
 
 test('sound is unlocked by a user action and deduplicated across card remounts', async () => {
   resetSignalPlayback();
@@ -119,6 +119,39 @@ test('YES sound plays immediately, then only after a real re-trigger and 20 seco
   assert.equal(considerYesAlert('m|Bea|YES', true, 8_000), false);
   assert.equal(considerYesAlert('m|Bea|YES', false, 9_000), false);
   assert.equal(considerYesAlert('m|Bea|YES', true, 6_000 + ALERT_COOLDOWN_MS), true);
+});
+
+test('buy and sell strategy sounds use different tones', async () => {
+  resetSignalPlayback();
+  const frequencies: number[] = [];
+  class Context {
+    state = 'running';
+    currentTime = 1;
+    destination = {};
+    async resume() { this.state = 'running'; }
+    createOscillator() {
+      const oscillator = { type: 'sine', frequency: { value: 0 }, connect() {}, start() { frequencies.push(oscillator.frequency.value); }, stop() {} };
+      return oscillator;
+    }
+    createGain() { return { gain: { setValueAtTime() {}, exponentialRampToValueAtTime() {} }, connect() {} }; }
+  }
+  const original = globalThis.window;
+  const originalNav = globalThis.navigator;
+  Object.defineProperty(globalThis, 'window', { value: { AudioContext: Context }, configurable: true });
+  Object.defineProperty(globalThis, 'navigator', { value: { vibrate() { return true; } }, configurable: true });
+  try {
+    assert.equal(await enableSignalAudio(), true);
+    assert.equal(playStrategySound('BUY'), true);
+    const buy = frequencies.slice();
+    frequencies.length = 0;
+    assert.equal(playStrategySound('SELL'), true);
+    assert.notDeepEqual(buy, frequencies);
+    assert.ok(buy[0]! > frequencies[0]!);
+  } finally {
+    Object.defineProperty(globalThis, 'window', { value: original, configurable: true });
+    Object.defineProperty(globalThis, 'navigator', { value: originalNav, configurable: true });
+    resetSignalPlayback();
+  }
 });
 
 test('strategy alerts play immediately and then wait 20 seconds', () => {

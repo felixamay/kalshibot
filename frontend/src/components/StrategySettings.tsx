@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { considerStrategyAlert, playSignalAudio } from "@/lib/signalAudio";
+import { considerStrategyAlert, playSignalAudio, playStrategySound } from "@/lib/signalAudio";
 
 type Settings = {
   auto_entry: boolean;
@@ -24,6 +24,44 @@ type Settings = {
   market_scope: "ALL_LIVE" | "SELECTED";
   selected_tickers: string[];
   one_direction_per_market: boolean;
+  short_run_enabled: boolean;
+  watch_one_game: boolean;
+  watched_ticker: string;
+  min_buy_score: number;
+  strong_buy_score: number;
+  min_sell_score: number;
+  min_liquidity_growth: number;
+  max_spread: number;
+  min_expected_profit_percent: number;
+  pullback_min_percent: number;
+  pullback_max_percent: number;
+  max_entry_price: number;
+};
+
+type LiveMatch = { ticker: string; label: string };
+
+type ShortSignal = {
+  market_ticker?: string;
+  headline: string;
+  action: string;
+  current_price: number | null;
+  entry_price: number | null;
+  exit_price: number | null;
+  liquidity_trend: string;
+  opportunity_percent: number;
+  reason: string;
+  timestamp_ms: number;
+  buy_score: number | null;
+  sell_score: number | null;
+  recent_high?: number;
+  pullback_percent?: number;
+  bid_depth_change_percent?: number;
+  trade_flow?: string;
+  zone_low?: number;
+  zone_high?: number;
+  peak?: number;
+  player?: string;
+  side?: string;
 };
 
 type Position = {
@@ -63,6 +101,18 @@ const EMPTY: Settings = {
   market_scope: "ALL_LIVE",
   selected_tickers: [],
   one_direction_per_market: true,
+  short_run_enabled: false,
+  watch_one_game: false,
+  watched_ticker: "",
+  min_buy_score: 75,
+  strong_buy_score: 85,
+  min_sell_score: 75,
+  min_liquidity_growth: 10,
+  max_spread: 4,
+  min_expected_profit_percent: 3,
+  pullback_min_percent: 4,
+  pullback_max_percent: 18,
+  max_entry_price: 65,
 };
 
 export function StrategySettings({
@@ -83,6 +133,9 @@ export function StrategySettings({
   const [saved, setSaved] = useState("");
   const [confirmOpen, setConfirmOpen] = useState<"save" | "reset" | null>(null);
   const [closeConfirm, setCloseConfirm] = useState(false);
+  const [liveMatches, setLiveMatches] = useState<LiveMatch[]>([]);
+  const [watching, setWatching] = useState<string | null>(null);
+  const [signal, setSignal] = useState<ShortSignal | null>(null);
 
   const headers = token
     ? { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }
@@ -94,6 +147,9 @@ export function StrategySettings({
       const data = await statusRes.json();
       setMarketData(data.market_data || "DISCONNECTED");
       setTradingApi(data.trading_api || "DISCONNECTED");
+      setLiveMatches(data.live_matches || []);
+      setWatching(data.watching || null);
+      if (!token) setSignal(data.signal || null);
     }
     if (!token) return;
     const [settingsRes, positionRes] = await Promise.all([
@@ -110,11 +166,16 @@ export function StrategySettings({
       const data = await positionRes.json();
       setPositions(data.positions || []);
       setReasons(data.reasons || []);
+      const nextSignal = (data.signals || [])[0] || null;
+      setSignal(nextSignal);
       if (alertsEnabled) {
         const now = Date.now();
         for (const event of data.events || []) {
           const key = `${event.market_ticker}|${event.kind}`;
-          if (considerStrategyAlert(key, now)) playSignalAudio(key);
+          if (!considerStrategyAlert(key, now)) continue;
+          const kind = String(event.kind || "");
+          if (/BUY|SELL|STOP LOSS/i.test(kind)) playStrategySound(kind);
+          else playSignalAudio(key);
         }
       }
     }
@@ -187,7 +248,52 @@ export function StrategySettings({
         These settings belong to your account. Automatic orders stay off until you turn them on.
       </p>
       {!token && <p className="mt-3 font-mono text-xs text-mist/50">Log in to edit and save your strategy.</p>}
+      <div className="mt-4 border border-signal-lime/40 p-4">
+        <p className="font-mono text-[10px] uppercase tracking-widest text-mist/50">Watch one game only</p>
+        <div className="mt-2 grid gap-3 md:grid-cols-2">
+          <select className="bg-ink-950 border border-white/15 px-3 py-2 font-mono" value={values.watch_one_game ? "ON" : "OFF"} onChange={(event) => setValues((prev) => ({ ...prev, watch_one_game: event.target.value === "ON" }))}>
+            <option value="OFF">OFF</option>
+            <option value="ON">ON</option>
+          </select>
+          <select className="bg-ink-950 border border-white/15 px-3 py-2 font-mono" value={values.watched_ticker} onChange={(event) => setValues((prev) => ({ ...prev, watched_ticker: event.target.value }))}>
+            <option value="">Select one live match</option>
+            {liveMatches.map((match) => (
+              <option key={match.ticker} value={match.ticker}>{match.label}</option>
+            ))}
+          </select>
+        </div>
+        {values.watch_one_game && (
+          <p className="mt-3 font-display text-3xl text-signal-lime">WATCHING: {watching || liveMatches.find((match) => match.ticker === values.watched_ticker)?.label || "Select one live match"}</p>
+        )}
+      </div>
+      {signal && (
+        <div className="mt-4 border border-white/15 p-4">
+          <p className="font-display text-4xl">{signal.headline || signal.action}</p>
+          <p className="mt-2 font-mono text-sm">Current: {signal.current_price ?? "—"}¢ · Entry/exit: {signal.entry_price ?? "—"}¢ / {signal.exit_price ?? "—"}¢</p>
+          <p className="font-mono text-sm">Liquidity: {signal.liquidity_trend} · Bid depth: {signal.bid_depth_change_percent ?? "—"}% · Trade flow: {signal.trade_flow || "—"}</p>
+          <p className="font-mono text-sm">Buy score: {signal.buy_score ?? "—"} · Sell score: {signal.sell_score ?? "—"} · Recent high: {signal.recent_high ?? "—"}¢ · Pullback: {signal.pullback_percent ?? "—"}%</p>
+          <p className="font-mono text-sm">Expected short-run zone: {signal.zone_low ?? "—"}–{signal.zone_high ?? "—"}¢ · Estimated opportunity after costs: {signal.opportunity_percent}%</p>
+          <p className="mt-2 text-sm">{signal.reason}</p>
+          <p className="mt-1 font-mono text-[11px] text-mist/50">{signal.timestamp_ms ? new Date(signal.timestamp_ms).toISOString() : ""} · Not a guaranteed profit.</p>
+        </div>
+      )}
       <div className="mt-4 grid gap-4 md:grid-cols-2">
+        <label className="font-mono text-[10px] uppercase tracking-widest text-mist/50">
+          Short-run strategy
+          <select className="mt-1 w-full bg-ink-950 border border-white/15 px-3 py-2 font-mono" value={values.short_run_enabled ? "ON" : "OFF"} onChange={(event) => setValues((prev) => ({ ...prev, short_run_enabled: event.target.value === "ON" }))}>
+            <option>OFF</option>
+            <option>ON</option>
+          </select>
+        </label>
+        <label className="font-mono text-[10px] uppercase tracking-widest text-mist/50">Min buy score{number("min_buy_score")}</label>
+        <label className="font-mono text-[10px] uppercase tracking-widest text-mist/50">Strong buy score{number("strong_buy_score")}</label>
+        <label className="font-mono text-[10px] uppercase tracking-widest text-mist/50">Min sell score{number("min_sell_score")}</label>
+        <label className="font-mono text-[10px] uppercase tracking-widest text-mist/50">Min liquidity growth %{number("min_liquidity_growth", "0.1")}</label>
+        <label className="font-mono text-[10px] uppercase tracking-widest text-mist/50">Max spread ¢{number("max_spread", "0.1")}</label>
+        <label className="font-mono text-[10px] uppercase tracking-widest text-mist/50">Min expected profit %{number("min_expected_profit_percent", "0.1")}</label>
+        <label className="font-mono text-[10px] uppercase tracking-widest text-mist/50">Pullback min %{number("pullback_min_percent", "0.1")}</label>
+        <label className="font-mono text-[10px] uppercase tracking-widest text-mist/50">Pullback max %{number("pullback_max_percent", "0.1")}</label>
+        <label className="font-mono text-[10px] uppercase tracking-widest text-mist/50">Max entry price ¢{number("max_entry_price", "1")}</label>
         <label className="font-mono text-[10px] uppercase tracking-widest text-mist/50">
           Auto entry
           <select className="mt-1 w-full bg-ink-950 border border-white/15 px-3 py-2 font-mono" value={values.auto_entry ? "ON" : "OFF"} onChange={(event) => setValues((prev) => ({ ...prev, auto_entry: event.target.value === "ON" }))}>

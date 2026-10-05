@@ -15,6 +15,9 @@ OPEN_STATUSES = {
     "TAKE PROFIT TRIGGERED",
     "STOP LOSS TRIGGERED",
     "TRAILING EXIT TRIGGERED",
+    "SELL DEVELOPING",
+    "WATCH PROFIT",
+    "SELL — LOCK PROFIT",
 }
 
 ALERT_KINDS = {
@@ -24,6 +27,9 @@ ALERT_KINDS = {
     "STOP LOSS TRIGGERED",
     "TRAILING EXIT TRIGGERED",
     "POSITION CLOSED",
+    "BUY",
+    "STRONG BUY",
+    "SELL",
 }
 
 DEFAULTS: dict[str, Any] = {
@@ -47,6 +53,18 @@ DEFAULTS: dict[str, Any] = {
     "market_scope": "ALL_LIVE",
     "selected_tickers": [],
     "one_direction_per_market": True,
+    "short_run_enabled": False,
+    "watch_one_game": False,
+    "watched_ticker": "",
+    "min_buy_score": 75.0,
+    "strong_buy_score": 85.0,
+    "min_sell_score": 75.0,
+    "min_liquidity_growth": 10.0,
+    "max_spread": 4.0,
+    "min_expected_profit_percent": 3.0,
+    "pullback_min_percent": 4.0,
+    "pullback_max_percent": 18.0,
+    "max_entry_price": 65.0,
 }
 
 
@@ -268,6 +286,12 @@ class Quote:
     live: bool
     label: str = ""
     now_ms: float = 0.0
+    depth_yes: float = 0.0
+    depth_no: float = 0.0
+    volume: float = 0.0
+    last_trade: Optional[float] = None
+    yes_player: str = ""
+    no_player: str = ""
 
 
 @dataclass
@@ -308,6 +332,11 @@ class StrategyBook:
         self.alerts: list[dict[str, Any]] = []
         self.events: list[dict[str, Any]] = []
         self.last_reason: dict[tuple[str, str], str] = {}
+        self.signals: dict[tuple[str, str], dict[str, Any]] = {}
+        self._signal_action: dict[tuple[str, str], str] = {}
+        from app.services.trading.short_run import KalshiShortRunPatternEngine
+
+        self.short_run = KalshiShortRunPatternEngine()
 
     def ensure(self, user_id: str) -> dict[str, Any]:
         row = self.settings.get(user_id)
@@ -336,11 +365,19 @@ class StrategyBook:
 
     def evaluate(self, user_id: str, quote: Quote) -> Optional[OrderRequest]:
         settings = self.ensure(user_id)
+        self.short_run.observe(quote)
+        if settings.get("watch_one_game") and quote.ticker != (settings.get("watched_ticker") or ""):
+            self.signals.pop((user_id, quote.ticker), None)
+            return None
         if not _in_scope(settings, quote.ticker):
             return None
         working = self._working(user_id, quote.ticker)
         if working is not None:
+            if working.rules.get("short_run_enabled"):
+                return self._manage_short(working, quote)
             return self._manage(working, quote)
+        if settings.get("short_run_enabled"):
+            return self._maybe_enter_short(user_id, settings, quote)
         return self._maybe_enter(user_id, settings, quote)
 
     def apply_receipt(self, position_id: str, receipt: OrderReceipt, *, closing: bool = False, now_ms: float = 0) -> None:
@@ -456,6 +493,149 @@ class StrategyBook:
         position.status = "ORDER SUBMITTED"
         return OrderRequest(user_id, quote.ticker, "buy", side, price, quantity, position.id)
 
+    def _maybe_enter_short(self, user_id: str, settings: dict[str, Any], quote: Quote) -> Optional[OrderRequest]:
+        reading = self.short_run.read_buy(quote, settings)
+        self.signals[(user_id, quote.ticker)] = reading
+        self._signal_alert(user_id, quote, reading)
+        if reading["action"] not in {"BUY", "STRONG BUY"}:
+            self.last_reason[(user_id, quote.ticker)] = reading["reason"]
+            return None
+        price = reading["entry_price"]
+        side = reading["side"]
+        if price is None:
+            return None
+        quantity = contract_count(float(settings["bet_amount"]), price)
+        cost = order_cost(price, quantity)
+        reason = risk_block_reason(
+            RiskView(
+                auto_entry=bool(settings["auto_entry"]),
+                paused=bool(settings["paused"]),
+                emergency_stop=bool(settings["emergency_stop"]),
+                trading_connected=self.trading_connected,
+                market_open=(quote.status or "OPEN").upper() not in {"CLOSED", "SETTLED", "FINALIZED", "DETERMINED", "SUSPENDED"},
+                market_live=quote.live,
+                in_scope=_in_scope(settings, quote.ticker),
+                data_age_ms=quote.data_age_ms,
+                max_data_age_ms=self.max_data_age_ms,
+                depth=quote.depth,
+                min_liquidity=self.min_liquidity,
+                open_notional=self._open_notional(user_id, quote.ticker),
+                order_cost=cost,
+                max_position=float(settings["max_position_per_match"]),
+                daily_loss=self.daily_loss.get(user_id, 0),
+                max_daily_loss=float(settings["max_daily_loss"]),
+                daily_exposure=self.daily_exposure.get(user_id, 0),
+                max_daily_exposure=float(settings["max_daily_exposure"]),
+                trades_this_match=self.trades.get((user_id, quote.ticker), 0),
+                max_trades=int(settings["max_trades_per_match"]),
+                cooldown_until_ms=self.cooldown_until.get((user_id, quote.ticker), 0),
+                now_ms=quote.now_ms,
+                opposite_open=self._opposite_open(user_id, quote.ticker, side),
+            )
+        )
+        if reason:
+            self.last_reason[(user_id, quote.ticker)] = reason
+            return None
+        self.last_reason.pop((user_id, quote.ticker), None)
+        position = PositionState(
+            id=str(uuid4()),
+            user_id=user_id,
+            ticker=quote.ticker,
+            label=reading["player"] or quote.label or quote.ticker,
+            side=side,
+            status="ENTRY CONDITION MET",
+            bet_amount=float(settings["bet_amount"]),
+            requested_price=price,
+            rules=_rules_snapshot(settings),
+            opened_at_ms=quote.now_ms,
+        )
+        self.positions[position.id] = position
+        self._alert(position, "ENTRY CONDITION MET")
+        position.status = "ORDER SUBMITTED"
+        return OrderRequest(user_id, quote.ticker, "buy", side, price, quantity, position.id)
+
+    def _manage_short(self, position: PositionState, quote: Quote) -> Optional[OrderRequest]:
+        if position.exit_pending or position.filled_qty <= 0 or position.entry_price <= 0:
+            return None
+        exit_price = executable_sell(position.side, quote.yes_bid, quote.yes_ask)
+        if exit_price is None:
+            return None
+        position.current_exit_price = exit_price
+        position.peak_price = max(position.peak_price or position.entry_price, exit_price)
+        rules = position.rules
+        stop = stop_loss_price(position.entry_price, float(rules["stop_loss_percent"]))
+        if exit_price <= stop:
+            reading = {
+                "action": "STOP LOSS",
+                "headline": f"SELL — {position.label} {position.side}",
+                "reason": "Price is through the stop. This is not a guaranteed exit price until Kalshi fills it.",
+                "current_price": exit_price,
+                "entry_price": position.entry_price,
+                "exit_price": exit_price,
+                "liquidity_trend": "FLAT",
+                "opportunity_percent": profit_percent(position.entry_price, exit_price),
+                "timestamp_ms": quote.now_ms,
+                "side": position.side,
+                "player": position.label,
+            }
+            self.signals[(position.user_id, quote.ticker)] = reading
+            self._signal_alert(position.user_id, quote, {"action": "STOP LOSS"})
+            if not rules.get("auto_exit"):
+                position.status = "STOP LOSS TRIGGERED"
+                return None
+            return self._exit(position, quote, exit_price, "STOP LOSS TRIGGERED")
+        reading = self.short_run.read_sell(
+            quote,
+            rules,
+            side=position.side,
+            entry=position.entry_price,
+            peak=position.peak_price,
+        )
+        self.signals[(position.user_id, quote.ticker)] = reading
+        self._signal_alert(position.user_id, quote, reading)
+        if reading["action"] == "SELL":
+            position.status = "SELL — LOCK PROFIT"
+            if rules.get("auto_exit"):
+                return self._exit(position, quote, exit_price, "SELL")
+            return None
+        if reading["action"] == "SELL DEVELOPING":
+            position.status = "SELL DEVELOPING"
+        elif reading["action"] == "WATCH PROFIT":
+            position.status = "WATCH PROFIT"
+        else:
+            position.status = "POSITION OPEN"
+        gain = profit_percent(position.entry_price, exit_price)
+        if rules.get("trailing_stop_enabled") and gain >= float(rules.get("trailing_activation_percent") or 0):
+            position.trailing_active = True
+        if rules.get("auto_exit") and position.trailing_active:
+            trail = trailing_stop_price(position.peak_price, float(rules["trailing_stop_percent"]))
+            if exit_price <= trail:
+                return self._exit(position, quote, exit_price, "TRAILING EXIT TRIGGERED")
+        target = take_profit_price(position.entry_price, float(rules["take_profit_percent"]))
+        if rules.get("auto_exit") and exit_price >= target:
+            return self._exit(position, quote, exit_price, "TAKE PROFIT TRIGGERED")
+        return None
+
+    def _signal_alert(self, user_id: str, quote: Quote, reading: dict[str, Any]) -> None:
+        action = reading.get("action") or ""
+        kind = {"STRONG BUY": "STRONG BUY", "BUY": "BUY", "SELL": "SELL", "STOP LOSS": "STOP LOSS TRIGGERED"}.get(action)
+        if kind is None:
+            return
+        key = (user_id, quote.ticker, kind)
+        if self._signal_action.get((user_id, quote.ticker)) == action:
+            return
+        self._signal_action[(user_id, quote.ticker)] = action
+        self.alerts.append({"user_id": user_id, "market_ticker": quote.ticker, "kind": kind})
+        self.events.append(
+            {
+                "user_id": user_id,
+                "market_ticker": quote.ticker,
+                "position_id": "",
+                "kind": kind,
+                "detail": reading.get("headline") or kind,
+            }
+        )
+
     def _manage(self, position: PositionState, quote: Quote) -> Optional[OrderRequest]:
         if position.exit_pending or position.filled_qty <= 0 or position.entry_price <= 0:
             return None
@@ -552,8 +732,12 @@ def _rules_snapshot(settings: dict[str, Any]) -> dict[str, Any]:
         "trailing_activation_percent",
         "trailing_stop_percent",
         "cooldown_seconds",
+        "short_run_enabled",
+        "min_sell_score",
+        "max_spread",
+        "min_liquidity_growth",
     )
-    return {key: settings[key] for key in keys}
+    return {key: settings.get(key) for key in keys}
 
 
 def _in_scope(settings: dict[str, Any], ticker: str) -> bool:

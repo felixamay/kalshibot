@@ -19,10 +19,26 @@ from app.models import (
 from app.services.trading.strategy import DEFAULTS, PositionState, StrategyBook, default_settings
 
 
+SHORT_RUN_KEYS = (
+    "short_run_enabled",
+    "watch_one_game",
+    "watched_ticker",
+    "min_buy_score",
+    "strong_buy_score",
+    "min_sell_score",
+    "min_liquidity_growth",
+    "max_spread",
+    "min_expected_profit_percent",
+    "pullback_min_percent",
+    "pullback_max_percent",
+    "max_entry_price",
+)
+
+
 def settings_from_row(row: UserStrategySettings) -> dict[str, Any]:
     data = default_settings()
     for key in DEFAULTS:
-        if key == "selected_tickers":
+        if key == "selected_tickers" or key in SHORT_RUN_KEYS:
             continue
         if hasattr(row, key):
             data[key] = getattr(row, key)
@@ -30,6 +46,12 @@ def settings_from_row(row: UserStrategySettings) -> dict[str, Any]:
         data["selected_tickers"] = json.loads(row.selected_tickers_json or "[]")
     except json.JSONDecodeError:
         data["selected_tickers"] = []
+    try:
+        extra = json.loads(getattr(row, "short_run_json", None) or "{}")
+    except json.JSONDecodeError:
+        extra = {}
+    if isinstance(extra, dict):
+        data.update({key: extra[key] for key in SHORT_RUN_KEYS if key in extra})
     return data
 
 
@@ -37,8 +59,21 @@ def apply_row(row: UserStrategySettings, values: dict[str, Any]) -> None:
     for key, value in values.items():
         if key == "selected_tickers":
             row.selected_tickers_json = json.dumps(list(value or []))
+        elif key in SHORT_RUN_KEYS:
+            continue
         elif hasattr(row, key) and key in DEFAULTS:
             setattr(row, key, value)
+    current = {}
+    try:
+        current = json.loads(getattr(row, "short_run_json", None) or "{}")
+    except json.JSONDecodeError:
+        current = {}
+    if not isinstance(current, dict):
+        current = {}
+    for key in SHORT_RUN_KEYS:
+        if key in values:
+            current[key] = values[key]
+    row.short_run_json = json.dumps(current)
 
 
 async def load_user(session, user_id: str) -> dict[str, Any]:

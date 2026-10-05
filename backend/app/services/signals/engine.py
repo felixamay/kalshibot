@@ -742,6 +742,12 @@ class SignalEngine:
             live=bool(ctx and match_is_live(ctx, now)),
             label=label,
             now_ms=now,
+            depth_yes=market.depth_yes or 0,
+            depth_no=market.depth_no or 0,
+            volume=market.volume or 0,
+            last_trade=market.last_trade,
+            yes_player=ctx.player_a if ctx else "",
+            no_player=ctx.player_b if ctx else "",
         )
 
     async def _evaluate_market(self, ticker: str, market: MarketState) -> None:

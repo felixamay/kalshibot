@@ -37,6 +37,18 @@ class StrategyUpdate(BaseModel):
     market_scope: Optional[str] = None
     selected_tickers: Optional[list[str]] = None
     one_direction_per_market: Optional[bool] = None
+    short_run_enabled: Optional[bool] = None
+    watch_one_game: Optional[bool] = None
+    watched_ticker: Optional[str] = None
+    min_buy_score: Optional[float] = Field(default=None, ge=0, le=100)
+    strong_buy_score: Optional[float] = Field(default=None, ge=0, le=100)
+    min_sell_score: Optional[float] = Field(default=None, ge=0, le=100)
+    min_liquidity_growth: Optional[float] = Field(default=None, ge=0)
+    max_spread: Optional[float] = Field(default=None, gt=0)
+    min_expected_profit_percent: Optional[float] = Field(default=None, ge=0)
+    pullback_min_percent: Optional[float] = Field(default=None, ge=0)
+    pullback_max_percent: Optional[float] = Field(default=None, gt=0)
+    max_entry_price: Optional[float] = Field(default=None, gt=0, le=99)
     apply_to_open: Optional[bool] = None
 
 
@@ -159,7 +171,8 @@ async def positions(user: User = Depends(get_current_user), db: AsyncSession = D
         for (owner, ticker), detail in runner.book.last_reason.items()
         if owner == user.id
     ]
-    return {"positions": rows, "events": events, "reasons": reasons}
+    signals = [dict(signal, market_ticker=ticker) for (owner, ticker), signal in runner.book.signals.items() if owner == user.id]
+    return {"positions": rows, "events": events, "reasons": reasons, "signals": signals}
 
 
 @router.get("/strategy/status")
@@ -170,6 +183,27 @@ async def status(user: Optional[User] = Depends(get_optional_user)) -> dict[str,
     if engine is not None and engine.snap.connection_status.value == "CONNECTED":
         market = "CONNECTED"
     settings = runner.book.settings.get(user.id) if user else {}
+    live_matches = []
+    if engine is not None:
+        import time
+
+        from app.services.signals.engine import match_is_live
+
+        now = time.time() * 1000.0
+        for ctx in engine.snap.matches.values():
+            if match_is_live(ctx, now):
+                live_matches.append({"ticker": ctx.market_ticker, "label": f"{ctx.player_a} vs {ctx.player_b}"})
+    signal = None
+    watching = None
+    if user:
+        watched = settings.get("watched_ticker")
+        for (owner, ticker), row in runner.book.signals.items():
+            if owner == user.id and (not watched or ticker == watched):
+                signal = dict(row, market_ticker=ticker)
+                break
+        if settings.get("watch_one_game") and watched:
+            match = next((item for item in live_matches if item["ticker"] == watched), None)
+            watching = match["label"] if match else watched
     return {
         "market_data": "CONNECTED" if market == "CONNECTED" else "DISCONNECTED",
         "trading_api": "CONNECTED" if runner.book.trading_connected else "DISCONNECTED",
@@ -177,6 +211,9 @@ async def status(user: Optional[User] = Depends(get_optional_user)) -> dict[str,
         "auto_exit": bool(settings.get("auto_exit")),
         "paused": bool(settings.get("paused")),
         "emergency_stop": bool(settings.get("emergency_stop")),
+        "live_matches": live_matches,
+        "watching": watching,
+        "signal": signal,
     }
 
 
