@@ -245,6 +245,7 @@ class SignalEngine:
         self._seq = 0
         self._persisted_pattern_ids: set[str] = set()
         self._patterns_restored = False
+        self.strategy_hook = None
 
     def set_connection_status(self, status: ConnectionStatus) -> None:
         self.snap.connection_status = status
@@ -744,6 +745,29 @@ class SignalEngine:
                 ts_ms=ts_ms,
             )
             await self._evaluate_market(ticker, market)
+            strategy_quote = self._strategy_quote(ticker, market)
+        hook = self.strategy_hook
+        if hook and strategy_quote is not None:
+            hook(strategy_quote)
+
+    def _strategy_quote(self, ticker: str, market: MarketState):
+        """Kalshi executable prices for the user strategy. Patterns are not consulted."""
+        from app.services.trading.strategy import Quote
+
+        ctx = self.snap.matches.get(ticker)
+        now = time.time() * 1000.0
+        label = f"{ctx.player_a} vs {ctx.player_b}" if ctx else ticker
+        return Quote(
+            ticker=ticker,
+            yes_bid=market.yes_bid or None,
+            yes_ask=market.yes_ask or None,
+            depth=(market.depth_yes or 0) + (market.depth_no or 0),
+            status=market.status or "OPEN",
+            data_age_ms=market.data_age_ms,
+            live=bool(ctx and match_is_live(ctx, now)),
+            label=label,
+            now_ms=now,
+        )
 
     async def _evaluate_market(self, ticker: str, market: MarketState) -> None:
         now = time.time() * 1000.0

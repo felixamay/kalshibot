@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { ALERT_COOLDOWN_MS, considerYesAlert, enableSignalAudio, playSignalAudio, resetSignalPlayback, resetYesAlerts, signalAlertKey } from './signalAudio';
+import { ALERT_COOLDOWN_MS, considerStrategyAlert, considerYesAlert, enableSignalAudio, playSignalAudio, resetSignalPlayback, resetStrategyAlerts, resetYesAlerts, signalAlertKey } from './signalAudio';
 
 test('sound is unlocked by a user action and deduplicated across card remounts', async () => {
   resetSignalPlayback();
@@ -119,4 +119,12 @@ test('YES sound plays immediately, then only after a real re-trigger and 20 seco
   assert.equal(considerYesAlert('m|Bea|YES', true, 8_000), false);
   assert.equal(considerYesAlert('m|Bea|YES', false, 9_000), false);
   assert.equal(considerYesAlert('m|Bea|YES', true, 6_000 + ALERT_COOLDOWN_MS), true);
+});
+
+test('strategy alerts play immediately and then wait 20 seconds', () => {
+  resetStrategyAlerts();
+  assert.equal(considerStrategyAlert('KX|TAKE PROFIT TRIGGERED', 1_000), true);
+  assert.equal(considerStrategyAlert('KX|TAKE PROFIT TRIGGERED', 2_000), false);
+  assert.equal(considerStrategyAlert('KX|STOP LOSS TRIGGERED', 2_000), true);
+  assert.equal(considerStrategyAlert('KX|TAKE PROFIT TRIGGERED', 1_000 + ALERT_COOLDOWN_MS), true);
 });

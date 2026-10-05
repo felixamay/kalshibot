@@ -220,15 +220,14 @@ export default function HomePage() {
       <header className="flex flex-wrap items-end justify-between gap-4 border-b border-white/10 pb-5">
         <div>
           <p className="font-mono text-[11px] uppercase tracking-[0.25em] text-signal-mint">
-            Live Kalshi Tennis · Read Only
+            Live Kalshi Tennis
           </p>
           <h1 className="font-display text-5xl md:text-7xl tracking-tight mt-1 text-mist">
             CourtEdge
           </h1>
           <p className="mt-2 max-w-xl text-mist/70 text-sm md:text-base">
-            Real-time market analysis that tells you when to consider a bet —
-            and exactly how long that advice remains valid. You place every
-            order manually on Kalshi.
+            Your strategy watches live Kalshi prices. Automatic orders stay off
+            until you enable them. You can still decide each bet yourself.
           </p>
         </div>
         <div className="space-y-3 text-right">
@@ -418,10 +417,10 @@ export default function HomePage() {
         </div>
       </section>
 
-      <StrategySettings apiUrl={apiUrl} token={token} />
+      <StrategySettings apiUrl={apiUrl} token={token} alertsEnabled={alertsEnabled} />
 
       <footer className="mt-12 border-t border-white/10 pt-6 font-mono text-[11px] text-mist/40 uppercase tracking-wider space-y-1">
-        <p>CourtEdge never places, modifies, or cancels Kalshi orders.</p>
+        <p>Automatic Kalshi orders run only for the signed-in user who turns them on.</p>
         <p>Server clock · Latency-adjusted TTL · Early invalidation on condition change.</p>
       </footer>
 

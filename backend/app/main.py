@@ -12,6 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.gpt_browser import router as gpt_browser_router
 from app.api.routes import router
+from app.api.strategy_routes import router as strategy_router
 from app.config import get_settings
 from app.database import init_db
 from app.services.market.orchestrator import MarketOrchestrator
@@ -28,11 +29,12 @@ settings = get_settings()
 
 engine: Optional[SignalEngine] = None
 orchestrator: Optional[MarketOrchestrator] = None
+strategy_runner = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global engine, orchestrator
+    global engine, orchestrator, strategy_runner
     logger.info("Starting Kalshi Tennis Signal Analyst (READ-ONLY)")
     logger.info("Order placement enabled: FALSE")
     await init_db()
@@ -41,9 +43,24 @@ async def lifespan(app: FastAPI):
         await hub.broadcast(msg)
 
     from app.database import AsyncSessionLocal
+    from app.services.kalshi.trading import KalshiTradingClient
+    from app.services.trading.runner import StrategyRunner
+    from app.services.trading.store import load_book
+    from app.services.trading.strategy import StrategyBook
+
     engine = SignalEngine(settings, broadcast=broadcast, session_factory=AsyncSessionLocal)
     orchestrator = MarketOrchestrator(engine, settings)
+    strategy_book = StrategyBook(
+        max_data_age_ms=settings.max_data_age_ms,
+        min_liquidity=settings.min_liquidity_contracts,
+    )
+    trading = KalshiTradingClient(orchestrator.client)
+    strategy_runner = StrategyRunner(strategy_book, trading, session_factory=AsyncSessionLocal)
+    await load_book(AsyncSessionLocal, strategy_book)
+    engine.strategy_hook = strategy_runner.on_quote
     await orchestrator.start()
+    import asyncio
+    asyncio.create_task(trading.refresh_connection())
     yield
     if orchestrator:
         await orchestrator.stop()
@@ -82,6 +99,7 @@ async def do_not_cache_api(request, call_next):
 
 app.include_router(router, prefix="/api")
 app.include_router(gpt_browser_router, prefix="/api")
+app.include_router(strategy_router, prefix="/api")
 
 
 @app.websocket("/ws")

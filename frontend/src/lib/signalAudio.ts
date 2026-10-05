@@ -10,6 +10,20 @@ export function resetYesAlerts() {
   yesAlerts.clear();
 }
 
+const strategyAlerts = new Map<string, number>();
+
+export function resetStrategyAlerts() {
+  strategyAlerts.clear();
+}
+
+/** First strategy alert plays immediately. The same alert waits 20 seconds. */
+export function considerStrategyAlert(alertKey: string, now: number): boolean {
+  const last = strategyAlerts.get(alertKey) ?? Number.NEGATIVE_INFINITY;
+  if (now - last < ALERT_COOLDOWN_MS) return false;
+  strategyAlerts.set(alertKey, now);
+  return true;
+}
+
 /** True only for a new YES episode whose last sound is at least 20 seconds old. */
 export function considerYesAlert(alertKey: string, isYes: boolean, now: number): boolean {
   const matchId = alertKey.split("|")[0];
