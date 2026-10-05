@@ -89,10 +89,15 @@ export function StrategySettings({
     : undefined;
 
   const load = async () => {
+    const statusRes = await fetch(`${apiUrl}/api/strategy/status`, { cache: "no-store" });
+    if (statusRes.ok) {
+      const data = await statusRes.json();
+      setMarketData(data.market_data || "DISCONNECTED");
+      setTradingApi(data.trading_api || "DISCONNECTED");
+    }
     if (!token) return;
-    const [settingsRes, statusRes, positionRes] = await Promise.all([
+    const [settingsRes, positionRes] = await Promise.all([
       fetch(`${apiUrl}/api/strategy/settings`, { headers, cache: "no-store" }),
-      fetch(`${apiUrl}/api/strategy/status`, { headers, cache: "no-store" }),
       fetch(`${apiUrl}/api/strategy/positions`, { headers, cache: "no-store" }),
     ]);
     if (settingsRes.ok) {
@@ -100,11 +105,6 @@ export function StrategySettings({
       const settings = { ...EMPTY, ...data.settings } as Settings;
       setValues(settings);
       setTickers((settings.selected_tickers || []).join(", "));
-    }
-    if (statusRes.ok) {
-      const data = await statusRes.json();
-      setMarketData(data.market_data || "DISCONNECTED");
-      setTradingApi(data.trading_api || "DISCONNECTED");
     }
     if (positionRes.ok) {
       const data = await positionRes.json();
@@ -122,7 +122,6 @@ export function StrategySettings({
 
   useEffect(() => {
     load().catch(() => undefined);
-    if (!token) return undefined;
     const timer = setInterval(() => load().catch(() => undefined), 3000);
     return () => clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
