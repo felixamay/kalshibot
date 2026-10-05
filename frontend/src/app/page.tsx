@@ -220,15 +220,14 @@ export default function HomePage() {
       <header className="flex flex-wrap items-end justify-between gap-4 border-b border-white/10 pb-5">
         <div>
           <p className="font-mono text-[11px] uppercase tracking-[0.25em] text-signal-mint">
-            Live Kalshi Tennis · Read Only
+            Live Kalshi Tennis
           </p>
           <h1 className="font-display text-5xl md:text-7xl tracking-tight mt-1 text-mist">
             CourtEdge
           </h1>
           <p className="mt-2 max-w-xl text-mist/70 text-sm md:text-base">
-            Real-time market analysis that tells you when to consider a bet —
-            and exactly how long that advice remains valid. You place every
-            order manually on Kalshi.
+            Your strategy watches live Kalshi prices. Automatic orders stay off
+            until you enable them. You can still decide each bet yourself.
           </p>
         </div>
         <div className="space-y-3 text-right">
@@ -334,12 +333,6 @@ export default function HomePage() {
         <p>Tennis Markets Found: {dashboard.discovery_health.tennis_markets_found ?? "—"} · Live Tennis Matches Found: {dashboard.live_match_count}</p>
         <p>Kalshi live matches found: {dashboard.discovery_health.kalshi_live_matches_found ?? dashboard.live_match_count}</p>
         <p>WebSocket markets subscribed: {dashboard.discovery_health.ws_markets_subscribed ?? "—"}</p>
-        <p>GPT browser connected: {dashboard.discovery_health.gpt_browser_connected === "YES" ? "YES" : `NO${dashboard.discovery_health.gpt_browser_error ? ` — ${dashboard.discovery_health.gpt_browser_error}` : ""}`}</p>
-        <p>GPT currently viewing: {dashboard.discovery_health.gpt_viewing ?? "—"}</p>
-        <p>Service games counted: {dashboard.discovery_health.service_games_counted ?? "0/2"}</p>
-        <p>Last GPT analysis time: {dashboard.discovery_health.last_gpt_analysis_ms ? new Date(dashboard.discovery_health.last_gpt_analysis_ms).toISOString() : "—"}</p>
-        <p>Last pattern result: {dashboard.discovery_health.last_pattern_result ?? "WAIT"}</p>
-        <p>Reason no signal was produced: {dashboard.discovery_health.no_signal_reason ?? "Waiting for two completed service games"}</p>
         <p>Last Discovery Refresh: {dashboard.discovery_health.last_refresh_ms ? new Date(dashboard.discovery_health.last_refresh_ms).toISOString() : "Pending"}</p>
         {!dashboard.discovery_health.complete && <p>Discovery incomplete — reconciliation pending</p>}
         {dashboard.discovery_health.errors?.map(e => <p key={e}>{e}</p>)}
@@ -418,10 +411,10 @@ export default function HomePage() {
         </div>
       </section>
 
-      <StrategySettings apiUrl={apiUrl} token={token} />
+      <StrategySettings apiUrl={apiUrl} token={token} alertsEnabled={alertsEnabled} />
 
       <footer className="mt-12 border-t border-white/10 pt-6 font-mono text-[11px] text-mist/40 uppercase tracking-wider space-y-1">
-        <p>CourtEdge never places, modifies, or cancels Kalshi orders.</p>
+        <p>Automatic Kalshi orders run only for the signed-in user who turns them on.</p>
         <p>Server clock · Latency-adjusted TTL · Early invalidation on condition change.</p>
       </footer>
 

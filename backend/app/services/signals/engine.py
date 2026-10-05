@@ -245,6 +245,7 @@ class SignalEngine:
         self._seq = 0
         self._persisted_pattern_ids: set[str] = set()
         self._patterns_restored = False
+        self.strategy_hook = None
 
     def set_connection_status(self, status: ConnectionStatus) -> None:
         self.snap.connection_status = status
@@ -360,35 +361,10 @@ class SignalEngine:
             ctx.reasoning_history.append(reasoning)
             ctx.last_pattern_serve = ctx.serves_seen
             await self._persist_block(ctx, block, reasoning)
-            self.schedule_ai_analysis(ctx, block, market)
 
     def schedule_ai_analysis(self, ctx, block, market, deep=False):
-        from app.services.signals.ai_patterns import build_snapshot
-        if block.invalidated or len(block.games) != 2 or market.data_age_ms > self.settings.max_data_age_ms:
-            return False
-        if not self.settings.openai_api_key:
-            ctx.ai_analysis = {"status": "UNAVAILABLE", "message": "OPENAI_API_KEY is not configured"}
-            return False
-        if deep and ctx.ai_task and not ctx.ai_task.done():
-            return False
-        if ctx.ai_task and not ctx.ai_task.done():
-            ctx.ai_task.cancel()
-        try:
-            snapshot = build_snapshot(ctx, block, market, self.snap.analyzers[ctx.market_ticker], self.settings)
-        except Exception:
-            logger.exception("Could not build AI feature snapshot")
-            ctx.ai_analysis = {"status": "UNAVAILABLE", "message": "AI ANALYSIS TEMPORARILY UNAVAILABLE"}
-            return False
-        snapshot['deep_requested'] = deep
-        ctx.ai_request_id = snapshot['analysis_request_id']
-        ctx.ai_analysis = {"status": "PENDING", "message": "Analyzing completed ServeBlock"}
-        from app.services.signals.ai_patterns import note_gpt_analysis_call
-        note_gpt_analysis_call()
-        task = asyncio.create_task(self._run_ai(ctx, block, snapshot, deep))
-        ctx.ai_task = task
-        self.ai_tasks.add(task)
-        task.add_done_callback(self.ai_tasks.discard)
-        return True
+        """Pattern advice uses Kalshi prices. This does not call the OpenAI API."""
+        return False
 
     def _ai_is_fresh(self, ctx, snapshot):
         market = self.snap.analyzers[ctx.market_ticker].state
@@ -744,6 +720,35 @@ class SignalEngine:
                 ts_ms=ts_ms,
             )
             await self._evaluate_market(ticker, market)
+            strategy_quote = self._strategy_quote(ticker, market)
+        hook = self.strategy_hook
+        if hook and strategy_quote is not None:
+            hook(strategy_quote)
+
+    def _strategy_quote(self, ticker: str, market: MarketState):
+        """Kalshi executable prices for the user strategy. Patterns are not consulted."""
+        from app.services.trading.strategy import Quote
+
+        ctx = self.snap.matches.get(ticker)
+        now = time.time() * 1000.0
+        label = f"{ctx.player_a} vs {ctx.player_b}" if ctx else ticker
+        return Quote(
+            ticker=ticker,
+            yes_bid=market.yes_bid or None,
+            yes_ask=market.yes_ask or None,
+            depth=(market.depth_yes or 0) + (market.depth_no or 0),
+            status=market.status or "OPEN",
+            data_age_ms=market.data_age_ms,
+            live=bool(ctx and match_is_live(ctx, now)),
+            label=label,
+            now_ms=now,
+            depth_yes=market.depth_yes or 0,
+            depth_no=market.depth_no or 0,
+            volume=market.volume or 0,
+            last_trade=market.last_trade,
+            yes_player=ctx.player_a if ctx else "",
+            no_player=ctx.player_b if ctx else "",
+        )
 
     async def _evaluate_market(self, ticker: str, market: MarketState) -> None:
         now = time.time() * 1000.0

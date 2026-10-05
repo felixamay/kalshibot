@@ -111,8 +111,7 @@ class MarketOrchestrator:
         self._live_updates = 0
         self._last_live_update: dict[str, str] = {}
         self._last_live_log = 0.0
-        from app.services.tennis.visual_session import KalshiVisualSession
-        self.visual = KalshiVisualSession(self.settings, self.engine)
+        self.visual = None
         self._visual_enabled = False
 
     async def start(self) -> None:
@@ -123,14 +122,11 @@ class MarketOrchestrator:
             on_status=self._on_ws_status,
         )
         await self.ws.start()
-        self._visual_enabled = True
         self._tasks = [
             asyncio.create_task(self._discovery_loop(), name="discovery"),
             asyncio.create_task(self._poll_loop(), name="poll"),
             asyncio.create_task(self._expiry_loop(), name="expiry"),
             asyncio.create_task(self._tennis_loop(), name="tennis"),
-            asyncio.create_task(self._visual_loop(), name="gpt-visual"),
-            asyncio.create_task(self.visual.start(), name="kalshi-visual"),
         ]
         logger.info("MarketOrchestrator started")
 
@@ -141,7 +137,6 @@ class MarketOrchestrator:
         for t in self._tasks:
             t.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
-        await self.visual.stop()
         await self.client.close()
         await self.tennis.close()
 
@@ -660,26 +655,3 @@ class MarketOrchestrator:
             self.engine.discovery_health = health
         health["kalshi_live_matches_found"] = live_matches
         health["ws_markets_subscribed"] = len(getattr(self.ws, "_subscribed_tickers", ()) or ())
-        health.update(self.visual.diagnostics())
-
-    async def _visual_loop(self) -> None:
-        """ChatGPT's Kalshi view updates scores. It does not block the Kalshi quote loop."""
-        while not self._stop.is_set():
-            try:
-                if self._visual_enabled:
-                    await self._observe_visual()
-            except Exception as exc:
-                logger.warning("Visual loop: %s", type(exc).__name__)
-            try:
-                await asyncio.wait_for(self._stop.wait(), timeout=5)
-            except asyncio.TimeoutError:
-                pass
-
-    async def _observe_visual(self) -> None:
-        try:
-            live = [ctx for ctx in self.engine.snap.matches.values() if ctx.score_confirmed is True]
-            await self.visual.watch(live)
-        except Exception as exc:
-            logger.warning("Visual session: %s", type(exc).__name__)
-            self.visual.no_signal_reason = f"Visual session error: {type(exc).__name__}"
-        self._publish_diagnostics(sum(1 for ctx in self.engine.snap.matches.values() if ctx.score_confirmed is True))

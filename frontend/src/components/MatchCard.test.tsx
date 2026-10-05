@@ -29,14 +29,14 @@ test('legacy observation values cannot display a five-minute study clock', () =>
   assert.doesNotMatch(html, /STUDYING FIRST 5 MINUTES/);
 });
 
-test('AI view and deterministic final decision are transparent', () => {
+test('Kalshi pattern decision stays visible without a GPT reading', () => {
   const html = renderToStaticMarkup(<MatchCard match={{...match,
     ai_pattern_analysis:{status:'VALID',model:'gpt-6-luna',output:{pattern_name:'PULLBACK_RECOVERY',
       favored_side:'PLAYER_A',pattern_confidence:82,pattern_stage:'DEVELOPING',recommendation:'ENTRY_SIGNAL',reasons:[],risks:[]}},
     hybrid_decision:{quantitative_engine:'PATTERN_WATCH',final_decision:'WAIT',score:60,blockers:['Spread failed']}
   }} serverNow={1000} snapshotServerTimeMs={1000}/>);
-  assert.match(html, /GPT-6 Luna/);
-  assert.match(html, /AI View: ENTRY SIGNAL/);
+  assert.doesNotMatch(html, /GPT-6 Luna/);
+  assert.doesNotMatch(html, /AI PATTERN ANALYSIS/);
   assert.match(html, /Final Decision: WAIT/);
   assert.match(html, /Spread failed/);
 });
@@ -49,7 +49,7 @@ test('a confirmed YES shows both sources and the player', () => {
         kalshi_live:{bias:'Bullish', bid_pressure_pct:72, liquidity:'Good'}}}
   }} serverNow={1000} snapshotServerTimeMs={1000}/>);
   assert.match(html, /YES — Alice/);
-  assert.match(html, /GPT VISUAL ANALYSIS/);
+  assert.doesNotMatch(html, /GPT VISUAL ANALYSIS/);
   assert.match(html, /KALSHI LIVE ANALYSIS/);
   assert.match(html, /Bid Pressure/);
   assert.match(html, /FINAL: YES — Alice/);

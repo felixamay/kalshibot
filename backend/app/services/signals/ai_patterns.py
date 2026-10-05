@@ -54,7 +54,7 @@ class GPTPatternAnalyst:
         self.transport = transport
 
     async def analyze(self, snapshot, model):
-        if not self.settings.openai_api_key:
+        if self.transport is None or not self.settings.openai_api_key:
             raise RuntimeError('AI unavailable')
         async with asyncio.timeout(self.settings.openai_request_timeout_seconds):
             async with httpx.AsyncClient(timeout=self.settings.openai_request_timeout_seconds, transport=self.transport) as client:

@@ -50,3 +50,13 @@ async def init_db() -> None:
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await conn.run_sync(_ensure_short_run_column)
+
+
+def _ensure_short_run_column(sync_conn) -> None:
+    if sync_conn.dialect.name != "sqlite":
+        return
+    rows = sync_conn.exec_driver_sql("PRAGMA table_info(user_strategy_settings)").fetchall()
+    names = {row[1] for row in rows}
+    if names and "short_run_json" not in names:
+        sync_conn.exec_driver_sql("ALTER TABLE user_strategy_settings ADD COLUMN short_run_json TEXT DEFAULT '{}'")

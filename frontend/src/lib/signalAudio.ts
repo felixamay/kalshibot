@@ -10,6 +10,20 @@ export function resetYesAlerts() {
   yesAlerts.clear();
 }
 
+const strategyAlerts = new Map<string, number>();
+
+export function resetStrategyAlerts() {
+  strategyAlerts.clear();
+}
+
+/** First strategy alert plays immediately. The same alert waits 20 seconds. */
+export function considerStrategyAlert(alertKey: string, now: number): boolean {
+  const last = strategyAlerts.get(alertKey) ?? Number.NEGATIVE_INFINITY;
+  if (now - last < ALERT_COOLDOWN_MS) return false;
+  strategyAlerts.set(alertKey, now);
+  return true;
+}
+
 /** True only for a new YES episode whose last sound is at least 20 seconds old. */
 export function considerYesAlert(alertKey: string, isYes: boolean, now: number): boolean {
   const matchId = alertKey.split("|")[0];
@@ -170,6 +184,39 @@ function pulseVibration(warning: boolean) {
   } catch {
     // Desktop Safari and iOS have no vibration motor API.
   }
+}
+
+/** BUY rises, SELL falls, STRONG BUY adds a third tone, STOP LOSS uses the low buzz. */
+export function playStrategySound(kind: string): boolean {
+  const normalized = kind.toUpperCase();
+  if (!context || context.state !== "running") {
+    const sounded = playHtmlAlert();
+    if (sounded) pulseVibration(normalized.includes("STOP"));
+    return sounded;
+  }
+  if (normalized.includes("STOP")) {
+    tone(90, 0, 0.28, "square");
+    tone(220, 0.08, 0.24);
+    pulseVibration(true);
+    return true;
+  }
+  if (normalized.startsWith("SELL")) {
+    tone(520, 0, 0.16);
+    tone(330, 0.14, 0.22);
+    pulseVibration(false);
+    return true;
+  }
+  if (normalized.includes("STRONG")) {
+    tone(880, 0, 0.12);
+    tone(1175, 0.1, 0.12);
+    tone(1568, 0.2, 0.16);
+    pulseVibration(false);
+    return true;
+  }
+  tone(660, 0, 0.14);
+  tone(880, 0.12, 0.16);
+  pulseVibration(false);
+  return true;
 }
 
 export function playSignalAudio(id: string, warning = false): boolean {

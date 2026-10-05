@@ -1,8 +1,6 @@
-"""Persistent read-only browser on kalshi.com.
+"""Helpers for a read-only Kalshi page reading.
 
-GPT sees the page only through an OpenAI computer-use turn. The session never
-clicks Buy or Sell and never submits an order. A normal JSON completion is not
-treated as visual access.
+The live app does not start this session. Prices and orders use the Kalshi API.
 """
 from __future__ import annotations
 
@@ -13,8 +11,6 @@ import re
 import time
 from types import SimpleNamespace
 from urllib.request import Request, urlopen
-
-import httpx
 
 from app.services.signals.ai_patterns import pattern_result_label
 from app.services.tennis.service_games import ServiceGameTracker
@@ -553,52 +549,7 @@ class KalshiVisualSession:
         return parsed
 
     async def _computer_loop(self, prompt: str) -> str:
-        timeout = min(float(getattr(self.settings, "openai_request_timeout_seconds", 8) or 8), 25)
-        model = getattr(self.settings, "openai_computer_model", None) or self.settings.openai_pattern_model
-        headers = {"Authorization": f"Bearer {self.settings.openai_api_key}"}
-        payload = {
-            "model": model,
-            "store": False,
-            "tools": [{
-                "type": "computer",
-                "display_width": 1280,
-                "display_height": 800,
-                "environment": "browser",
-            }],
-            "input": [{"role": "user", "content": [{"type": "input_text", "text": prompt}]}],
-            "truncation": "auto",
-        }
-        final = ""
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            for _ in range(3):
-                response = await client.post("https://api.openai.com/v1/responses", headers=headers, json=payload)
-                response.raise_for_status()
-                body = response.json()
-                calls = []
-                for item in body.get("output") or []:
-                    if item.get("type") == "message":
-                        for part in item.get("content") or []:
-                            if part.get("type") == "output_text":
-                                final += part.get("text") or ""
-                    elif item.get("type") == "computer_call":
-                        calls.append(item)
-                if not calls:
-                    return final
-                outputs = []
-                for call in calls:
-                    action = call.get("action") or {}
-                    if not action_allowed(action):
-                        logger.info("REFUSED COMPUTER ACTION: %s", action.get("type"))
-                    else:
-                        await self._perform(action)
-                    shot = await self._capture()
-                    outputs.append({
-                        "type": "computer_call_output",
-                        "call_id": call.get("call_id"),
-                        "output": {"type": "input_image", "image_url": f"data:image/png;base64,{shot}"},
-                    })
-                payload = {"model": model, "previous_response_id": body.get("id"), "input": outputs, "truncation": "auto"}
-        return final
+        raise RuntimeError("OpenAI computer use is disabled")
 
     async def _perform(self, action: dict) -> None:
         kind = str(action.get("type") or "").lower()

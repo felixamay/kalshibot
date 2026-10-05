@@ -500,3 +500,110 @@ class TennisPointStateRecord(ReasoningRecordMixin, Base):
 
 class GPTPatternRecord(ReasoningRecordMixin, Base):
     __tablename__ = 'gpt_pattern_analyses'
+
+
+class UserStrategySettings(Base):
+    """One row per user. Another user's save never writes this row."""
+
+    __tablename__ = "user_strategy_settings"
+
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), primary_key=True)
+    auto_entry: Mapped[bool] = mapped_column(Boolean, default=False)
+    auto_exit: Mapped[bool] = mapped_column(Boolean, default=False)
+    paused: Mapped[bool] = mapped_column(Boolean, default=False)
+    emergency_stop: Mapped[bool] = mapped_column(Boolean, default=False)
+    bet_amount: Mapped[float] = mapped_column(Float, default=10.0)
+    entry_type: Mapped[str] = mapped_column(String(16), default="YES")
+    entry_price: Mapped[float] = mapped_column(Float, default=50.0)
+    take_profit_percent: Mapped[float] = mapped_column(Float, default=8.0)
+    stop_loss_percent: Mapped[float] = mapped_column(Float, default=4.0)
+    trailing_stop_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    trailing_activation_percent: Mapped[float] = mapped_column(Float, default=5.0)
+    trailing_stop_percent: Mapped[float] = mapped_column(Float, default=3.0)
+    max_trades_per_match: Mapped[int] = mapped_column(Integer, default=2)
+    cooldown_seconds: Mapped[int] = mapped_column(Integer, default=60)
+    max_position_per_match: Mapped[float] = mapped_column(Float, default=25.0)
+    max_daily_loss: Mapped[float] = mapped_column(Float, default=25.0)
+    max_daily_exposure: Mapped[float] = mapped_column(Float, default=50.0)
+    market_scope: Mapped[str] = mapped_column(String(16), default="ALL_LIVE")
+    selected_tickers_json: Mapped[str] = mapped_column(Text, default="[]")
+    one_direction_per_market: Mapped[bool] = mapped_column(Boolean, default=True)
+    short_run_json: Mapped[str] = mapped_column(Text, default="{}")
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class KalshiOrderRecord(Base):
+    __tablename__ = "kalshi_orders"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), index=True)
+    position_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
+    market_ticker: Mapped[str] = mapped_column(String(128), index=True)
+    action: Mapped[str] = mapped_column(String(8))
+    side: Mapped[str] = mapped_column(String(8))
+    requested_price: Mapped[float] = mapped_column(Float)
+    filled_price: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    requested_qty: Mapped[float] = mapped_column(Float, default=0)
+    filled_qty: Mapped[float] = mapped_column(Float, default=0)
+    fees: Mapped[float] = mapped_column(Float, default=0)
+    kalshi_order_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
+    status: Mapped[str] = mapped_column(String(32), default="ORDER SUBMITTED")
+    created_at_ms: Mapped[float] = mapped_column(Float, default=0)
+
+
+class StrategyPosition(Base):
+    __tablename__ = "positions"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), index=True)
+    market_ticker: Mapped[str] = mapped_column(String(128), index=True)
+    player_label: Mapped[str] = mapped_column(String(255), default="")
+    side: Mapped[str] = mapped_column(String(8))
+    status: Mapped[str] = mapped_column(String(40), default="WAITING FOR ENTRY")
+    bet_amount: Mapped[float] = mapped_column(Float, default=0)
+    requested_price: Mapped[float] = mapped_column(Float, default=0)
+    entry_price: Mapped[float] = mapped_column(Float, default=0)
+    filled_qty: Mapped[float] = mapped_column(Float, default=0)
+    fees: Mapped[float] = mapped_column(Float, default=0)
+    peak_price: Mapped[float] = mapped_column(Float, default=0)
+    current_exit_price: Mapped[float] = mapped_column(Float, default=0)
+    trailing_active: Mapped[bool] = mapped_column(Boolean, default=False)
+    rules_json: Mapped[str] = mapped_column(Text, default="{}")
+    opened_at_ms: Mapped[float] = mapped_column(Float, default=0)
+    closed_at_ms: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    close_price: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    realized_pnl: Mapped[float] = mapped_column(Float, default=0)
+
+
+class PositionEvent(Base):
+    __tablename__ = "position_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    position_id: Mapped[str] = mapped_column(String(64), index=True)
+    user_id: Mapped[str] = mapped_column(String(36), index=True)
+    kind: Mapped[str] = mapped_column(String(40))
+    detail: Mapped[str] = mapped_column(Text, default="")
+    created_at_ms: Mapped[float] = mapped_column(Float, default=0)
+
+
+class StrategyEvent(Base):
+    __tablename__ = "strategy_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(String(36), index=True)
+    market_ticker: Mapped[str] = mapped_column(String(128), default="")
+    kind: Mapped[str] = mapped_column(String(40))
+    detail: Mapped[str] = mapped_column(Text, default="")
+    created_at_ms: Mapped[float] = mapped_column(Float, default=0)
+
+
+class DailyRiskState(Base):
+    __tablename__ = "daily_risk_state"
+
+    id: Mapped[str] = mapped_column(String(80), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(36), index=True)
+    day: Mapped[str] = mapped_column(String(10), index=True)
+    realized_loss: Mapped[float] = mapped_column(Float, default=0)
+    exposure: Mapped[float] = mapped_column(Float, default=0)
